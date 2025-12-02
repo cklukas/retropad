@@ -37,5 +37,11 @@
 // Dialogs and controls
 #define IDD_GOTO                50001
 #define IDD_ABOUT               50002
+#define IDD_PAGE_SETUP          50003
 #define IDC_GOTO_EDIT           50010
-
+#define IDC_PAGE_HEADER         50020
+#define IDC_PAGE_FOOTER         50021
+#define IDC_MARGIN_LEFT         50022
+#define IDC_MARGIN_RIGHT        50023
+#define IDC_MARGIN_TOP          50024
+#define IDC_MARGIN_BOTTOM       50025

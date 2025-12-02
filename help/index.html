@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>retropad Help</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 12px; line-height: 1.5; }
+    code { font-family: Consolas, monospace; }
+    h1 { font-size: 18px; margin-bottom: 6px; }
+    h2 { font-size: 15px; margin-top: 18px; margin-bottom: 6px; }
+    ul { margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <h1>retropad</h1>
+  <p>A lightweight Notepad-style text editor for Windows. Supports Unicode text files with BOM detection, word wrap, status bar, find/replace, and printing with customizable headers, footers, and margins.</p>
+
+  <h2>Basics</h2>
+  <ul>
+    <li><strong>New/Open/Save</strong>: Standard file operations. Encodings honored via BOM.</li>
+    <li><strong>Word Wrap</strong>: Toggle to wrap lines and hide horizontal scrolling.</li>
+    <li><strong>Status Bar</strong>: Shows line, column, and total line count.</li>
+    <li><strong>Find/Replace</strong>: Ctrl+F / Ctrl+H with Match Case and direction.</li>
+    <li><strong>Go To</strong>: Jump to a specific line when word wrap is off.</li>
+    <li><strong>Font</strong>: Choose the editor font via Format &gt; Font.</li>
+    <li><strong>Time/Date</strong>: Inserts the current time and date.</li>
+  </ul>
+
+  <h2>Printing &amp; Page Setup</h2>
+  <p>Use <em>File &gt; Page Setup</em> to edit margins and header/footer text. Default margins are 0.75&quot; left/right and 1.0&quot; top/bottom. Default header is the file name; footer is &ldquo;Page X of Y&rdquo;.</p>
+
+  <h3>Header/Footer Formatting Codes</h3>
+  <ul>
+    <li><code>&amp;l</code> start left-aligned section</li>
+    <li><code>&amp;c</code> start centered section</li>
+    <li><code>&amp;r</code> start right-aligned section</li>
+    <li><code>&amp;d</code> current date</li>
+    <li><code>&amp;t</code> current time</li>
+    <li><code>&amp;f</code> file name</li>
+    <li><code>&amp;p</code> current page number</li>
+    <li><code>&amp;P</code> total pages</li>
+    <li><code>&amp;&amp;</code> literal ampersand</li>
+  </ul>
+
+  <p>Example: <code>&amp;l&amp;f&amp;cPage &amp;p of &amp;P&amp;r&amp;d</code> places the file name left, page count centered, and date right.</p>
+</body>
+</html>
