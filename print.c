@@ -4,8 +4,16 @@
 
 #include "retropad.h"
 #include "print.h"
+#include "rendering.h"
+#include "xps_backend.h"
+#include "xps_target.h"
+#include "print_dialog_callback.h"
+#include "preview_target.h"
 #include "resource.h"
 
+#ifndef PD_USEXPSCONVERSION
+#define PD_USEXPSCONVERSION 0x00010000
+#endif
 static BOOL TryParseMargin(HWND dlg, int ctrlId, int *outThousandths);
 static void SetMarginText(HWND dlg, int ctrlId, int thousandths);
 static INT_PTR CALLBACK PageSetupDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -13,18 +21,40 @@ static HFONT CreatePrintFont(HDC hdc);
 static void SplitHeaderFooterSegments(const WCHAR *format, const WCHAR *fileName, int pageNumber, int totalPages, const WCHAR *dateStr, const WCHAR *timeStr, WCHAR *left, size_t cchLeft, WCHAR *center, size_t cchCenter, WCHAR *right, size_t cchRight);
 static int ComputeTotalPages(const WCHAR *text, int charsPerLine, int linesPerPage);
 static BOOL PrintBuffer(HDC hdc, const WCHAR *text);
+static BOOL GetPrinterNameFromDevNames(HGLOBAL hDevNames, WCHAR *out, size_t cchOut);
 
 void DoPageSetup(HWND hwnd) {
     DialogBoxW(g_hInst, MAKEINTRESOURCE(IDD_PAGE_SETUP), hwnd, PageSetupDlgProc);
 }
 
 void DoPrint(HWND hwnd) {
+    HRESULT hrCo = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    BOOL coInitialized = SUCCEEDED(hrCo);
+    if (hrCo == RPC_E_CHANGED_MODE) {
+        coInitialized = FALSE;
+    }
+
+    XpsBackend xpsBackend = {0};
+    BOOL xpsReady = SUCCEEDED(XpsBackendInitialize(&xpsBackend));
+
     int len = GetWindowTextLengthW(g_app.hwndEdit);
     WCHAR *buffer = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR));
-    if (!buffer) return;
+    if (!buffer) {
+        if (xpsReady) XpsBackendShutdown(&xpsBackend);
+        if (coInitialized) CoUninitialize();
+        return;
+    }
     GetWindowTextW(g_app.hwndEdit, buffer, len + 1);
 
-    DWORD flags = PD_RETURNDC | PD_USEDEVMODECOPIESANDCOLLATE | PD_ALLPAGES | PD_COLLATE;
+    DWORD flags = PD_RETURNDC | PD_USEDEVMODECOPIESANDCOLLATE | PD_ALLPAGES | PD_COLLATE | PD_USEXPSCONVERSION;
+    PrintRenderContext ctx = {
+        .text = buffer,
+        .fullPath = g_app.currentPath[0] ? g_app.currentPath : UNTITLED_NAME,
+        .marginsThousandths = g_app.marginsThousandths,
+        .headerText = g_app.headerText,
+        .footerText = g_app.footerText,
+    };
+
     PRINTDLGEXW pdx = {0};
     PRINTPAGERANGE range = {0, 0};
     pdx.lStructSize = sizeof(pdx);
@@ -36,20 +66,33 @@ void DoPrint(HWND hwnd) {
     pdx.nMaxPageRanges = 1;
     pdx.lpPageRanges = &range;
 
+    IPrintDialogCallback *cb = NULL;
+    IPrintDialogServices *services = NULL;
+    PreviewTarget *previewTarget = NULL;
+    CreatePrintDialogCallback(&cb);
+    pdx.lpCallback = (IUnknown *)cb;
     HRESULT hr = PrintDlgExW(&pdx);
     if (FAILED(hr)) {
         MessageBoxW(hwnd, L"Unable to show the print dialog.", APP_TITLE, MB_ICONERROR);
         if (pdx.hDC) DeleteDC(pdx.hDC);
         if (pdx.hDevMode && pdx.hDevMode != g_app.hDevMode) GlobalFree(pdx.hDevMode);
         if (pdx.hDevNames && pdx.hDevNames != g_app.hDevNames) GlobalFree(pdx.hDevNames);
+        if (cb) cb->lpVtbl->Release(cb);
         HeapFree(GetProcessHeap(), 0, buffer);
         return;
+    }
+    PrintDialogCallbackGetServices(cb, &services);
+    PrintDialogCallbackGetPreviewTarget(cb, &previewTarget);
+    if (previewTarget) {
+        PreviewTargetSetRenderer(previewTarget, &ctx, 96.0f, 96.0f, 816.0f, 1056.0f);
     }
 
     if (pdx.dwResultAction == PD_RESULT_CANCEL) {
         if (pdx.hDC) DeleteDC(pdx.hDC);
         if (pdx.hDevMode && pdx.hDevMode != g_app.hDevMode) GlobalFree(pdx.hDevMode);
         if (pdx.hDevNames && pdx.hDevNames != g_app.hDevNames) GlobalFree(pdx.hDevNames);
+        if (services) services->lpVtbl->Release(services);
+        if (cb) cb->lpVtbl->Release(cb);
         HeapFree(GetProcessHeap(), 0, buffer);
         return;
     }
@@ -60,12 +103,16 @@ void DoPrint(HWND hwnd) {
         g_app.hDevMode = pdx.hDevMode;
         g_app.hDevNames = pdx.hDevNames;
         if (pdx.hDC) DeleteDC(pdx.hDC);
+        if (services) services->lpVtbl->Release(services);
+        if (cb) cb->lpVtbl->Release(cb);
         HeapFree(GetProcessHeap(), 0, buffer);
         return;
     }
 
     if (pdx.dwResultAction != PD_RESULT_PRINT) {
         if (pdx.hDC) DeleteDC(pdx.hDC);
+        if (services) services->lpVtbl->Release(services);
+        if (cb) cb->lpVtbl->Release(cb);
         HeapFree(GetProcessHeap(), 0, buffer);
         return;
     }
@@ -74,22 +121,97 @@ void DoPrint(HWND hwnd) {
     if (g_app.hDevNames && g_app.hDevNames != pdx.hDevNames) GlobalFree(g_app.hDevNames);
     g_app.hDevMode = pdx.hDevMode;
     g_app.hDevNames = pdx.hDevNames;
+    if (!g_app.hDevMode && services) {
+        HGLOBAL hSvcMode = NULL;
+        if (SUCCEEDED(PrintDialogCallbackCopyDevMode(cb, &hSvcMode))) {
+            g_app.hDevMode = hSvcMode;
+        }
+    }
+    if (previewTarget) ReleasePreviewTarget(previewTarget);
+    if (services) services->lpVtbl->Release(services);
+    if (cb) cb->lpVtbl->Release(cb);
 
-    HDC hdc = pdx.hDC;
-    HFONT hPrintFont = CreatePrintFont(hdc);
-    HFONT hOldFont = NULL;
-    if (hPrintFont) {
-        hOldFont = (HFONT)SelectObject(hdc, hPrintFont);
+    BOOL printed = FALSE;
+    FLOAT pageWidth = 816.0f;   // defaults: 8.5" * 96
+    FLOAT pageHeight = 1056.0f; // 11" * 96
+    FLOAT dpiX = 96.0f;
+    FLOAT dpiY = 96.0f;
+
+    if (pdx.hDC) {
+        int capDpiX = GetDeviceCaps(pdx.hDC, LOGPIXELSX);
+        int capDpiY = GetDeviceCaps(pdx.hDC, LOGPIXELSY);
+        if (capDpiX > 0) dpiX = (FLOAT)capDpiX;
+        if (capDpiY > 0) dpiY = (FLOAT)capDpiY;
+
+        int physWidth = GetDeviceCaps(pdx.hDC, PHYSICALWIDTH);
+        int physHeight = GetDeviceCaps(pdx.hDC, PHYSICALHEIGHT);
+        if (physWidth > 0 && physHeight > 0 && capDpiX > 0 && capDpiY > 0) {
+            pageWidth = (FLOAT)physWidth * (96.0f / (FLOAT)capDpiX);
+            pageHeight = (FLOAT)physHeight * (96.0f / (FLOAT)capDpiY);
+        }
     }
 
-    if (!PrintBuffer(hdc, buffer)) {
+    if (xpsReady) {
+        WCHAR printerName[MAX_PATH] = {0};
+        BOOL havePrinterName = FALSE;
+        if (services) {
+            UINT cch = ARRAYSIZE(printerName);
+            if (SUCCEEDED(services->lpVtbl->GetCurrentPrinterName(services, printerName, &cch))) {
+                havePrinterName = TRUE;
+            }
+        }
+        if (!havePrinterName) {
+            havePrinterName = GetPrinterNameFromDevNames(g_app.hDevNames, printerName, ARRAYSIZE(printerName));
+        }
+        if (havePrinterName) {
+            IPrintDocumentPackageTarget *pkgTarget = NULL;
+            if (SUCCEEDED(XpsBackendCreateTarget(&xpsBackend, printerName, &pkgTarget))) {
+                IXpsOMPackageWriter *writer = NULL;
+                if (SUCCEEDED(XpsBackendCreateWriterForTarget(&xpsBackend, pkgTarget, &writer))) {
+                    if (g_app.hDevMode) {
+                        DEVMODEW *dm = (DEVMODEW *)GlobalLock(g_app.hDevMode);
+                        if (dm) {
+                            if (dm->dmFields & DM_PAPERWIDTH) {
+                                double inches = (dm->dmPaperWidth * 0.1) / 25.4;
+                                pageWidth = (FLOAT)(inches * 96.0);
+                            }
+                            if (dm->dmFields & DM_PAPERLENGTH) {
+                                double inches = (dm->dmPaperLength * 0.1) / 25.4;
+                                pageHeight = (FLOAT)(inches * 96.0);
+                            }
+                            if ((dm->dmFields & DM_ORIENTATION) && dm->dmOrientation == DMORIENT_LANDSCAPE) {
+                                FLOAT tmp = pageWidth;
+                                pageWidth = pageHeight;
+                                pageHeight = tmp;
+                            }
+                            GlobalUnlock(g_app.hDevMode);
+                        }
+                    }
+
+                    XpsRenderTarget xpsTarget;
+                    if (SUCCEEDED(InitXpsRenderTarget(&xpsTarget, xpsBackend.factory, writer, pageWidth, pageHeight, dpiX, dpiY))) {
+                        if (RenderDocument(&ctx, &xpsTarget.base)) {
+                            printed = TRUE;
+                        }
+                        ReleaseXpsRenderTarget(&xpsTarget);
+                    }
+                    XpsPackageWriterClose(writer);
+                    XpsPackageWriterRelease(writer);
+                }
+                pkgTarget->lpVtbl->Release(pkgTarget);
+            }
+        }
+    }
+
+    if (!printed) {
         MessageBoxW(hwnd, L"Printing failed.", APP_TITLE, MB_ICONERROR);
     }
 
-    if (hOldFont) SelectObject(hdc, hOldFont);
-    if (hPrintFont) DeleteObject(hPrintFont);
-    if (hdc) DeleteDC(hdc);
+    if (pdx.hDC) DeleteDC(pdx.hDC);
+
     HeapFree(GetProcessHeap(), 0, buffer);
+    if (xpsReady) XpsBackendShutdown(&xpsBackend);
+    if (coInitialized) CoUninitialize();
 }
 
 static BOOL TryParseMargin(HWND dlg, int ctrlId, int *outThousandths) {
@@ -552,4 +674,12 @@ static BOOL PrintBuffer(HDC hdc, const WCHAR *text) {
         return FALSE;
     }
     return TRUE;
+}
+static BOOL GetPrinterNameFromDevNames(HGLOBAL hDevNames, WCHAR *out, size_t cchOut) {
+    DEVNAMES *dn = (DEVNAMES *)GlobalLock(hDevNames);
+    if (!dn) return FALSE;
+    const WCHAR *name = (const WCHAR *)((BYTE *)dn + dn->wDeviceOffset);
+    HRESULT hr = StringCchCopyW(out, cchOut, name);
+    GlobalUnlock(hDevNames);
+    return SUCCEEDED(hr);
 }
