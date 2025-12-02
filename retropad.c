@@ -257,7 +257,7 @@ static void CreateEditControl(HWND hwnd) {
         style |= WS_HSCROLL | ES_AUTOHSCROLL;
     }
 
-    g_app.hwndEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", NULL, style, 0, 0, 0, 0, hwnd, (HMENU)1, g_hInst, NULL);
+    g_app.hwndEdit = CreateWindowExW(0, L"EDIT", NULL, style, 0, 0, 0, 0, hwnd, (HMENU)1, g_hInst, NULL);
     if (g_app.hwndEdit && g_app.hFont) {
         ApplyFontToEdit(g_app.hwndEdit, g_app.hFont);
     }
@@ -269,7 +269,7 @@ static void ToggleStatusBar(HWND hwnd, BOOL visible) {
     g_app.statusVisible = visible;
     if (visible) {
         if (!g_app.hwndStatus) {
-            g_app.hwndStatus = CreateStatusWindowW(WS_CHILD | SBARS_SIZEGRIP, L"", hwnd, 2);
+            g_app.hwndStatus = CreateStatusWindowW(WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP | CCS_NODIVIDER, L"", hwnd, 2);
         }
         ShowWindow(g_app.hwndStatus, SW_SHOW);
     } else if (g_app.hwndStatus) {
@@ -421,7 +421,7 @@ static void UpdateStatusBar(HWND hwnd) {
 
     WCHAR status[128];
     StringCchPrintfW(status, ARRAYSIZE(status), L"Ln %d, Col %d    Lines: %d", line, col, lines);
-    SendMessageW(g_app.hwndStatus, SB_SETTEXT, 0, (LPARAM)status);
+    SendMessageW(g_app.hwndStatus, SB_SETTEXT, SBT_NOBORDERS, (LPARAM)status);
 }
 
 static void ShowFindDialog(HWND hwnd) {
@@ -1280,7 +1280,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
     switch (msg) {
     case WM_CREATE: {
-        INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_BAR_CLASSES };
+        INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_BAR_CLASSES | ICC_STANDARD_CLASSES };
         InitCommonControlsEx(&icc);
         CreateEditControl(hwnd);
         ToggleStatusBar(hwnd, TRUE);
