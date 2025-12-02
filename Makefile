@@ -6,25 +6,30 @@ CC=cl
 RC=rc
 !ENDIF
 
+OUTDIR=binaries
 CFLAGS=/nologo /DUNICODE /D_UNICODE /W4 /EHsc
 LDFLAGS=/nologo
 LIBS=user32.lib gdi32.lib comdlg32.lib comctl32.lib shell32.lib
 
-OBJS=retropad.obj file_io.obj retropad.res
+OBJS=$(OUTDIR)\retropad.obj $(OUTDIR)\file_io.obj $(OUTDIR)\retropad.res
 
-all: retropad.exe
+all: $(OUTDIR)\retropad.exe
 
-retropad.exe: $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) retropad.obj file_io.obj retropad.res $(LIBS) /Fe:$@
+$(OUTDIR):
+	@if not exist "$(OUTDIR)" mkdir "$(OUTDIR)"
 
-retropad.obj: retropad.c resource.h file_io.h
-	$(CC) $(CFLAGS) /c retropad.c
+$(OUTDIR)\retropad.exe: $(OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(OUTDIR)\retropad.obj $(OUTDIR)\file_io.obj $(OUTDIR)\retropad.res $(LIBS) /Fe:$(OUTDIR)\retropad.exe
 
-file_io.obj: file_io.c file_io.h resource.h
-	$(CC) $(CFLAGS) /c file_io.c
+$(OUTDIR)\retropad.obj: $(OUTDIR) retropad.c resource.h file_io.h
+	$(CC) $(CFLAGS) /Fo$(OUTDIR)\ /c retropad.c
 
-retropad.res: retropad.rc resource.h res\retropad.ico
-	$(RC) /fo retropad.res retropad.rc
+$(OUTDIR)\file_io.obj: $(OUTDIR) file_io.c file_io.h resource.h
+	$(CC) $(CFLAGS) /Fo$(OUTDIR)\ /c file_io.c
+
+$(OUTDIR)\retropad.res: $(OUTDIR) retropad.rc resource.h res\retropad.ico
+	$(RC) /fo $(OUTDIR)\retropad.res retropad.rc
 
 clean:
-	-del /q retropad.exe retropad.obj file_io.obj retropad.res 2> NUL
+	-del /q $(OUTDIR)\retropad.exe $(OUTDIR)\retropad.obj $(OUTDIR)\file_io.obj $(OUTDIR)\retropad.res $(OUTDIR)\*.pdb 2> NUL
+	-del /q retropad.exe retropad.obj file_io.obj retropad.res retropad.pdb 2> NUL
