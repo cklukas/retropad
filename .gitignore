@@ -1,0 +1,5 @@
+/binaries/
+/*.obj
+/*.res
+/*.exe
+/*.pdb
