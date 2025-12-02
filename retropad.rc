@@ -4,6 +4,7 @@
 #pragma code_page(65001)
 
 IDI_RETROPAD ICON "res/retropad.ico"
+1 RT_MANIFEST "retropad.manifest"
 
 IDC_RETROPAD MENU
 BEGIN
