@@ -7,8 +7,6 @@
 #include "rendering.h"
 #include "xps_backend.h"
 #include "xps_target.h"
-#include "print_dialog_callback.h"
-#include "preview_target.h"
 #include "resource.h"
 
 #ifndef PD_USEXPSCONVERSION
@@ -22,6 +20,7 @@ static void SplitHeaderFooterSegments(const WCHAR *format, const WCHAR *fileName
 static int ComputeTotalPages(const WCHAR *text, int charsPerLine, int linesPerPage);
 static BOOL PrintBuffer(HDC hdc, const WCHAR *text);
 static BOOL GetPrinterNameFromDevNames(HGLOBAL hDevNames, WCHAR *out, size_t cchOut);
+static BOOL IsValidGlobalHandle(HGLOBAL h);
 
 void DoPageSetup(HWND hwnd) {
     DialogBoxW(g_hInst, MAKEINTRESOURCE(IDD_PAGE_SETUP), hwnd, PageSetupDlgProc);
@@ -59,41 +58,122 @@ void DoPrint(HWND hwnd) {
     PRINTPAGERANGE range = {0, 0};
     pdx.lStructSize = sizeof(pdx);
     pdx.hwndOwner = hwnd;
-    pdx.hDevMode = g_app.hDevMode;
-    pdx.hDevNames = g_app.hDevNames;
+    // To avoid E_HANDLE from stale handles, do not pass cached hDevMode/Names; dialog will supply fresh ones.
+    pdx.hDevMode = NULL;
+    pdx.hDevNames = NULL;
     pdx.Flags = flags;
     pdx.nStartPage = START_PAGE_GENERAL;
     pdx.nMaxPageRanges = 1;
     pdx.lpPageRanges = &range;
+    pdx.nPageRanges = 0;
+    pdx.nMinPage = 1;
+    pdx.nMaxPage = 0xFFFFFFFF;
 
-    IPrintDialogCallback *cb = NULL;
-    IPrintDialogServices *services = NULL;
-    PreviewTarget *previewTarget = NULL;
-    CreatePrintDialogCallback(&cb);
-    pdx.lpCallback = (IUnknown *)cb;
-    HRESULT hr = PrintDlgExW(&pdx);
-    if (FAILED(hr)) {
-        MessageBoxW(hwnd, L"Unable to show the print dialog.", APP_TITLE, MB_ICONERROR);
+    WCHAR dbgBuf[1024] = {0};
+    int dbgLen = 0;
+    BOOL debugPrint = TRUE; // enabled by default during investigation
+
+    struct {
+        LPCWSTR name;
+        BOOL useHandles;
+        DWORD extraFlags;
+        BOOL classic;
+    } attempts[] = {
+        {L"PrintDlgEx minimal", FALSE, 0, FALSE},
+        {L"PrintDlgEx w/handles", TRUE, 0, FALSE},
+        {L"PrintDlgEx no selection/page nums", FALSE, PD_NOSELECTION | PD_NOPAGENUMS, FALSE},
+        {L"PrintDlg classic", TRUE, 0, TRUE},
+    };
+
+    BOOL dialogShown = FALSE;
+    HRESULT hr = E_FAIL;
+    for (int i = 0; i < (int)(sizeof(attempts) / sizeof(attempts[0])); ++i) {
+        PRINTDLGEXW ex = pdx;
+        PRINTDLGW pdClassic = {0};
+        HGLOBAL hDevModeTry = attempts[i].useHandles && IsValidGlobalHandle(g_app.hDevMode) ? g_app.hDevMode : NULL;
+        HGLOBAL hDevNamesTry = attempts[i].useHandles && IsValidGlobalHandle(g_app.hDevNames) ? g_app.hDevNames : NULL;
+
+        if (attempts[i].classic) {
+            pdClassic.lStructSize = sizeof(pdClassic);
+            pdClassic.hwndOwner = hwnd;
+            pdClassic.hDevMode = hDevModeTry;
+            pdClassic.hDevNames = hDevNamesTry;
+            pdClassic.Flags = PD_RETURNDC | PD_USEDEVMODECOPIESANDCOLLATE | PD_ALLPAGES | PD_COLLATE;
+            BOOL ok = PrintDlgW(&pdClassic);
+            DWORD err = ok ? 0 : CommDlgExtendedError();
+            if (ok) {
+                pdx.dwResultAction = PD_RESULT_PRINT;
+                pdx.hDC = pdClassic.hDC;
+                pdx.hDevMode = pdClassic.hDevMode;
+                pdx.hDevNames = pdClassic.hDevNames;
+                dialogShown = TRUE;
+                hr = S_OK;
+                break;
+            } else if (err == 0) {
+                pdx.dwResultAction = PD_RESULT_CANCEL;
+                pdx.hDC = pdClassic.hDC;
+                pdx.hDevMode = pdClassic.hDevMode;
+                pdx.hDevNames = pdClassic.hDevNames;
+                dialogShown = TRUE;
+                hr = S_OK;
+                break;
+            } else {
+                hr = HRESULT_FROM_WIN32(err);
+            }
+        } else {
+            ex.hDevMode = hDevModeTry;
+            ex.hDevNames = hDevNamesTry;
+            ex.Flags = flags | attempts[i].extraFlags;
+            ex.lpCallback = NULL;
+            hr = PrintDlgExW(&ex);
+            if (hr == E_HANDLE) {
+                ex.hDevMode = NULL;
+                ex.hDevNames = NULL;
+                hr = PrintDlgExW(&ex);
+            }
+            if (SUCCEEDED(hr)) {
+                pdx = ex;
+                dialogShown = TRUE;
+                break;
+            }
+        }
+
+        if (debugPrint) {
+            WCHAR line[256];
+            StringCchPrintfW(line, ARRAYSIZE(line), L"%s -> 0x%08X\r\n", attempts[i].name, hr);
+            size_t l = wcslen(line);
+            if (dbgLen + (int)l < (int)ARRAYSIZE(dbgBuf) - 1) {
+                CopyMemory(dbgBuf + dbgLen, line, l * sizeof(WCHAR));
+                dbgLen += (int)l;
+                dbgBuf[dbgLen] = 0;
+            }
+        }
+    }
+
+    if (!dialogShown) {
+        WCHAR buf[512];
+        if (debugPrint && dbgLen > 0) {
+            StringCchPrintfW(buf, ARRAYSIZE(buf), L"Unable to show the print dialog.\r\n%s", dbgBuf);
+        } else {
+            StringCchPrintfW(buf, ARRAYSIZE(buf), L"Unable to show the print dialog. (0x%08X)", hr);
+        }
+        MessageBoxW(hwnd, buf, APP_TITLE, MB_ICONERROR);
         if (pdx.hDC) DeleteDC(pdx.hDC);
         if (pdx.hDevMode && pdx.hDevMode != g_app.hDevMode) GlobalFree(pdx.hDevMode);
         if (pdx.hDevNames && pdx.hDevNames != g_app.hDevNames) GlobalFree(pdx.hDevNames);
-        if (cb) cb->lpVtbl->Release(cb);
         HeapFree(GetProcessHeap(), 0, buffer);
+        if (xpsReady) XpsBackendShutdown(&xpsBackend);
+        if (coInitialized) CoUninitialize();
         return;
-    }
-    PrintDialogCallbackGetServices(cb, &services);
-    PrintDialogCallbackGetPreviewTarget(cb, &previewTarget);
-    if (previewTarget) {
-        PreviewTargetSetRenderer(previewTarget, &ctx, 96.0f, 96.0f, 816.0f, 1056.0f);
     }
 
     if (pdx.dwResultAction == PD_RESULT_CANCEL) {
         if (pdx.hDC) DeleteDC(pdx.hDC);
         if (pdx.hDevMode && pdx.hDevMode != g_app.hDevMode) GlobalFree(pdx.hDevMode);
         if (pdx.hDevNames && pdx.hDevNames != g_app.hDevNames) GlobalFree(pdx.hDevNames);
-        if (services) services->lpVtbl->Release(services);
-        if (cb) cb->lpVtbl->Release(cb);
         HeapFree(GetProcessHeap(), 0, buffer);
+        if (xpsReady) XpsBackendShutdown(&xpsBackend);
+        if (coInitialized) CoUninitialize();
         return;
     }
 
@@ -103,17 +183,17 @@ void DoPrint(HWND hwnd) {
         g_app.hDevMode = pdx.hDevMode;
         g_app.hDevNames = pdx.hDevNames;
         if (pdx.hDC) DeleteDC(pdx.hDC);
-        if (services) services->lpVtbl->Release(services);
-        if (cb) cb->lpVtbl->Release(cb);
         HeapFree(GetProcessHeap(), 0, buffer);
+        if (xpsReady) XpsBackendShutdown(&xpsBackend);
+        if (coInitialized) CoUninitialize();
         return;
     }
 
     if (pdx.dwResultAction != PD_RESULT_PRINT) {
         if (pdx.hDC) DeleteDC(pdx.hDC);
-        if (services) services->lpVtbl->Release(services);
-        if (cb) cb->lpVtbl->Release(cb);
         HeapFree(GetProcessHeap(), 0, buffer);
+        if (xpsReady) XpsBackendShutdown(&xpsBackend);
+        if (coInitialized) CoUninitialize();
         return;
     }
 
@@ -121,16 +201,7 @@ void DoPrint(HWND hwnd) {
     if (g_app.hDevNames && g_app.hDevNames != pdx.hDevNames) GlobalFree(g_app.hDevNames);
     g_app.hDevMode = pdx.hDevMode;
     g_app.hDevNames = pdx.hDevNames;
-    if (!g_app.hDevMode && services) {
-        HGLOBAL hSvcMode = NULL;
-        if (SUCCEEDED(PrintDialogCallbackCopyDevMode(cb, &hSvcMode))) {
-            g_app.hDevMode = hSvcMode;
-        }
-    }
-    if (previewTarget) ReleasePreviewTarget(previewTarget);
-    if (services) services->lpVtbl->Release(services);
-    if (cb) cb->lpVtbl->Release(cb);
-
+    
     BOOL printed = FALSE;
     FLOAT pageWidth = 816.0f;   // defaults: 8.5" * 96
     FLOAT pageHeight = 1056.0f; // 11" * 96
@@ -153,16 +224,7 @@ void DoPrint(HWND hwnd) {
 
     if (xpsReady) {
         WCHAR printerName[MAX_PATH] = {0};
-        BOOL havePrinterName = FALSE;
-        if (services) {
-            UINT cch = ARRAYSIZE(printerName);
-            if (SUCCEEDED(services->lpVtbl->GetCurrentPrinterName(services, printerName, &cch))) {
-                havePrinterName = TRUE;
-            }
-        }
-        if (!havePrinterName) {
-            havePrinterName = GetPrinterNameFromDevNames(g_app.hDevNames, printerName, ARRAYSIZE(printerName));
-        }
+        BOOL havePrinterName = GetPrinterNameFromDevNames(g_app.hDevNames, printerName, ARRAYSIZE(printerName));
         if (havePrinterName) {
             IPrintDocumentPackageTarget *pkgTarget = NULL;
             if (SUCCEEDED(XpsBackendCreateTarget(&xpsBackend, printerName, &pkgTarget))) {
@@ -682,4 +744,12 @@ static BOOL GetPrinterNameFromDevNames(HGLOBAL hDevNames, WCHAR *out, size_t cch
     HRESULT hr = StringCchCopyW(out, cchOut, name);
     GlobalUnlock(hDevNames);
     return SUCCEEDED(hr);
+}
+
+static BOOL IsValidGlobalHandle(HGLOBAL h) {
+    if (!h) return FALSE;
+    void *p = GlobalLock(h);
+    if (!p) return FALSE;
+    GlobalUnlock(h);
+    return TRUE;
 }

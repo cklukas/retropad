@@ -13,7 +13,6 @@ extern "C" {
 HRESULT CreatePrintDialogCallback(IPrintDialogCallback **out);
 HRESULT PrintDialogCallbackGetServices(IPrintDialogCallback *cb, IPrintDialogServices **outServices);
 HRESULT PrintDialogCallbackCopyDevMode(IPrintDialogCallback *cb, HGLOBAL *outDevMode);
-HRESULT PrintDialogCallbackGetPreviewTarget(IPrintDialogCallback *cb, PreviewTarget **outTarget);
 
 #ifdef __cplusplus
 }

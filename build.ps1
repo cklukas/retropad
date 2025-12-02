@@ -24,6 +24,13 @@ foreach ($cand in $candidates) {
     & cmd.exe /c $cmdLine
     if ($LASTEXITCODE -eq 0) { exit 0 }
 
+    if ($LASTEXITCODE -eq 2 -or $LASTEXITCODE -eq 1) {
+        # Common linker failure when retropad.exe is locked/running
+        $locked = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "retropad" }
+        if ($locked) {
+            Write-Warning "retropad.exe appears to be running/locked. Close it and rerun build.ps1."
+        }
+    }
     Write-Warning "Build failed with $($cand.Path) (exit $LASTEXITCODE). Trying next option..."
 }
 

@@ -15,7 +15,6 @@ typedef struct PrintDialogCallbackImpl {
     LONG refCount;
     IUnknown *siteUnk;
     IPrintDialogServices *services;
-    PreviewTarget *previewTarget;
 } PrintDialogCallbackImpl;
 
 static PrintDialogCallbackImpl *FromCallback(IPrintDialogCallback *iface) {
@@ -34,14 +33,6 @@ static HRESULT STDMETHODCALLTYPE Callback_QueryInterface(IPrintDialogCallback *s
     } else if (IsEqualIID(riid, &IID_IObjectWithSite)) {
         PrintDialogCallbackImpl *impl = FromCallback(self);
         *ppv = &impl->siteIface;
-    } else if (IsEqualIID(riid, &IID_IPrintPreviewDxgiPackageTarget)) {
-        PrintDialogCallbackImpl *impl = FromCallback(self);
-        if (impl->previewTarget) {
-            *ppv = PreviewTargetAsUnknown(impl->previewTarget);
-            ((IUnknown *)(*ppv))->lpVtbl->AddRef((IUnknown *)*ppv);
-            return S_OK;
-        }
-        return E_NOINTERFACE;
     } else {
         return E_NOINTERFACE;
     }
@@ -63,9 +54,6 @@ static ULONG STDMETHODCALLTYPE Callback_Release(IPrintDialogCallback *self) {
         }
         if (impl->siteUnk) {
             impl->siteUnk->lpVtbl->Release(impl->siteUnk);
-        }
-        if (impl->previewTarget) {
-            ReleasePreviewTarget(impl->previewTarget);
         }
         HeapFree(GetProcessHeap(), 0, impl);
     }
@@ -163,8 +151,6 @@ HRESULT CreatePrintDialogCallback(IPrintDialogCallback **out) {
     impl->refCount = 1;
     impl->services = NULL;
     impl->siteUnk = NULL;
-    impl->previewTarget = NULL;
-    CreatePreviewTarget(&impl->previewTarget);
     *out = &impl->callback;
     return S_OK;
 }
@@ -211,17 +197,7 @@ HRESULT PrintDialogCallbackCopyDevMode(IPrintDialogCallback *cb, HGLOBAL *outDev
 }
 
 HRESULT PrintDialogCallbackGetPreviewTarget(IPrintDialogCallback *cb, PreviewTarget **outTarget) {
-    if (!outTarget) return E_POINTER;
-    *outTarget = NULL;
-    if (!cb) return E_POINTER;
-    PrintDialogCallbackImpl *impl = FromCallback(cb);
-    if (impl->previewTarget) {
-        IPrintPreviewDxgiPackageTarget *iface = (IPrintPreviewDxgiPackageTarget *)PreviewTargetAsUnknown(impl->previewTarget);
-        if (iface && iface->lpVtbl) {
-            iface->lpVtbl->AddRef(iface);
-        }
-        *outTarget = impl->previewTarget;
-        return S_OK;
-    }
-    return E_FAIL;
+    (void)cb;
+    if (outTarget) *outTarget = NULL;
+    return E_NOTIMPL;
 }
