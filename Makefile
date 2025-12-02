@@ -35,7 +35,7 @@ $(OUTDIR)\retropad.obj: $(OUTDIR) retropad.c resource.h file_io.h
 $(OUTDIR)\file_io.obj: $(OUTDIR) file_io.c file_io.h resource.h
 	$(CC) $(CFLAGS) /Fo$(OUTDIR)\ /c file_io.c
 
-$(OUTDIR)\retropad.res: $(OUTDIR) retropad.rc resource.h res\retropad.ico
+$(OUTDIR)\retropad.res: $(OUTDIR) retropad.rc resource.h res\retropad.ico retropad.manifest
 	$(RC) $(RCFLAGS) /fo $(OUTDIR)\retropad.res retropad.rc
 
 $(OUTDIR)\retropad.chm: $(OUTDIR) help\retropad.hhp help\toc.hhc help\index.html
