@@ -127,10 +127,10 @@ static BOOL XpsBeginPage(void *userData, int pageNumber) {
     StringCchPrintfW(uri, ARRAYSIZE(uri), L"/Documents/1/Pages/%u.fpage", target->pageNumber);
     IOpcPartUri *pageUri = NULL;
     IXpsOMPage *page = NULL;
+    XPS_SIZE size = target->pageSize;
     HRESULT hr = target->factory->CreatePartUri(uri, &pageUri);
     if (FAILED(hr)) goto cleanup;
 
-    XPS_SIZE size = target->pageSize;
     hr = target->factory->CreatePage(&size, L"en-US", pageUri, &page);
     if (FAILED(hr)) goto cleanup;
 

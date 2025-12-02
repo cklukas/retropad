@@ -3,8 +3,8 @@
 
 #pragma code_page(65001)
 
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "retropad.manifest"
 IDI_RETROPAD ICON "res/retropad.ico"
-1 RT_MANIFEST "retropad.manifest"
 
 IDC_RETROPAD MENU
 BEGIN

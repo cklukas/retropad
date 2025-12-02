@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <strsafe.h>
 
 #include "retropad.h"
@@ -8,10 +9,33 @@
 #include "xps_backend.h"
 #include "xps_target.h"
 #include "resource.h"
+#include "print_dialog_callback.h"
+#include <PrintPreview.h>
+#include <strsafe.h>
+
+static void DebugLog(const WCHAR *msg) {
+    WCHAR path[MAX_PATH];
+    DWORD len = GetTempPathW(ARRAYSIZE(path), path);
+    if (len == 0 || len >= ARRAYSIZE(path)) return;
+    if (FAILED(StringCchCatW(path, ARRAYSIZE(path), L"retropad_preview.log"))) return;
+    HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    WCHAR line[512];
+    StringCchPrintfW(line, ARRAYSIZE(line), L"[%02u:%02u:%02u.%03u] %s\r\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, msg ? msg : L"(null)");
+    int bytes = (int)(lstrlenW(line) * sizeof(WCHAR));
+    WriteFile(h, line, bytes, &written, NULL);
+    CloseHandle(h);
+}
 
 #ifndef PD_USEXPSCONVERSION
 #define PD_USEXPSCONVERSION 0x00010000
 #endif
+
+// Print context used by the modern print dialog preview callback.
+PrintRenderContext g_printContext = {0};
 static BOOL TryParseMargin(HWND dlg, int ctrlId, int *outThousandths);
 static void SetMarginText(HWND dlg, int ctrlId, int thousandths);
 static INT_PTR CALLBACK PageSetupDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -21,12 +45,16 @@ static int ComputeTotalPages(const WCHAR *text, int charsPerLine, int linesPerPa
 static BOOL PrintBuffer(HDC hdc, const WCHAR *text);
 static BOOL GetPrinterNameFromDevNames(HGLOBAL hDevNames, WCHAR *out, size_t cchOut);
 static BOOL IsValidGlobalHandle(HGLOBAL h);
+static void GetDefaultPrintHandles(HGLOBAL *outDevMode, HGLOBAL *outDevNames);
+static HGLOBAL DuplicateGlobalHandle(HGLOBAL h);
+static void EnsureComctl();
 
 void DoPageSetup(HWND hwnd) {
     DialogBoxW(g_hInst, MAKEINTRESOURCE(IDD_PAGE_SETUP), hwnd, PageSetupDlgProc);
 }
 
 void DoPrint(HWND hwnd) {
+    DebugLog(L"DoPrint invoked");
     HRESULT hrCo = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     BOOL coInitialized = SUCCEEDED(hrCo);
     if (hrCo == RPC_E_CHANGED_MODE) {
@@ -35,6 +63,7 @@ void DoPrint(HWND hwnd) {
 
     XpsBackend xpsBackend = {0};
     BOOL xpsReady = SUCCEEDED(XpsBackendInitialize(&xpsBackend));
+    EnsureComctl();
 
     int len = GetWindowTextLengthW(g_app.hwndEdit);
     WCHAR *buffer = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR));
@@ -45,7 +74,9 @@ void DoPrint(HWND hwnd) {
     }
     GetWindowTextW(g_app.hwndEdit, buffer, len + 1);
 
-    DWORD flags = PD_RETURNDC | PD_USEDEVMODECOPIESANDCOLLATE | PD_ALLPAGES | PD_COLLATE | PD_USEXPSCONVERSION;
+    // PD_USEXPSCONVERSION triggers E_HANDLE on modern Windows when no custom template is provided.
+    DWORD baseFlags = PD_ALLPAGES;
+    DWORD baseFlagsNoXps = PD_ALLPAGES;
     PrintRenderContext ctx = {
         .text = buffer,
         .fullPath = g_app.currentPath[0] ? g_app.currentPath : UNTITLED_NAME,
@@ -54,116 +85,39 @@ void DoPrint(HWND hwnd) {
         .footerText = g_app.footerText,
     };
 
-    PRINTDLGEXW pdx = {0};
-    PRINTPAGERANGE range = {0, 0};
-    pdx.lStructSize = sizeof(pdx);
-    pdx.hwndOwner = hwnd;
-    // To avoid E_HANDLE from stale handles, do not pass cached hDevMode/Names; dialog will supply fresh ones.
-    pdx.hDevMode = NULL;
-    pdx.hDevNames = NULL;
-    pdx.Flags = flags;
-    pdx.nStartPage = START_PAGE_GENERAL;
-    pdx.nMaxPageRanges = 1;
-    pdx.lpPageRanges = &range;
-    pdx.nPageRanges = 0;
-    pdx.nMinPage = 1;
-    pdx.nMaxPage = 0xFFFFFFFF;
+    // Make the context available to the preview callback once the dialog provides a site.
+    g_printContext = ctx;
 
-    WCHAR dbgBuf[1024] = {0};
-    int dbgLen = 0;
-    BOOL debugPrint = TRUE; // enabled by default during investigation
-
-    struct {
-        LPCWSTR name;
-        BOOL useHandles;
-        DWORD extraFlags;
-        BOOL classic;
-    } attempts[] = {
-        {L"PrintDlgEx minimal", FALSE, 0, FALSE},
-        {L"PrintDlgEx w/handles", TRUE, 0, FALSE},
-        {L"PrintDlgEx no selection/page nums", FALSE, PD_NOSELECTION | PD_NOPAGENUMS, FALSE},
-        {L"PrintDlg classic", TRUE, 0, TRUE},
-    };
-
-    BOOL dialogShown = FALSE;
-    HRESULT hr = E_FAIL;
-    for (int i = 0; i < (int)(sizeof(attempts) / sizeof(attempts[0])); ++i) {
-        PRINTDLGEXW ex = pdx;
-        PRINTDLGW pdClassic = {0};
-        HGLOBAL hDevModeTry = attempts[i].useHandles && IsValidGlobalHandle(g_app.hDevMode) ? g_app.hDevMode : NULL;
-        HGLOBAL hDevNamesTry = attempts[i].useHandles && IsValidGlobalHandle(g_app.hDevNames) ? g_app.hDevNames : NULL;
-
-        if (attempts[i].classic) {
-            pdClassic.lStructSize = sizeof(pdClassic);
-            pdClassic.hwndOwner = hwnd;
-            pdClassic.hDevMode = hDevModeTry;
-            pdClassic.hDevNames = hDevNamesTry;
-            pdClassic.Flags = PD_RETURNDC | PD_USEDEVMODECOPIESANDCOLLATE | PD_ALLPAGES | PD_COLLATE;
-            BOOL ok = PrintDlgW(&pdClassic);
-            DWORD err = ok ? 0 : CommDlgExtendedError();
-            if (ok) {
-                pdx.dwResultAction = PD_RESULT_PRINT;
-                pdx.hDC = pdClassic.hDC;
-                pdx.hDevMode = pdClassic.hDevMode;
-                pdx.hDevNames = pdClassic.hDevNames;
-                dialogShown = TRUE;
-                hr = S_OK;
-                break;
-            } else if (err == 0) {
-                pdx.dwResultAction = PD_RESULT_CANCEL;
-                pdx.hDC = pdClassic.hDC;
-                pdx.hDevMode = pdClassic.hDevMode;
-                pdx.hDevNames = pdClassic.hDevNames;
-                dialogShown = TRUE;
-                hr = S_OK;
-                break;
-            } else {
-                hr = HRESULT_FROM_WIN32(err);
-            }
-        } else {
-            ex.hDevMode = hDevModeTry;
-            ex.hDevNames = hDevNamesTry;
-            ex.Flags = flags | attempts[i].extraFlags;
-            ex.lpCallback = NULL;
-            hr = PrintDlgExW(&ex);
-            if (hr == E_HANDLE) {
-                ex.hDevMode = NULL;
-                ex.hDevNames = NULL;
-                hr = PrintDlgExW(&ex);
-            }
-            if (SUCCEEDED(hr)) {
-                pdx = ex;
-                dialogShown = TRUE;
-                break;
-            }
-        }
-
-        if (debugPrint) {
-            WCHAR line[256];
-            StringCchPrintfW(line, ARRAYSIZE(line), L"%s -> 0x%08X\r\n", attempts[i].name, hr);
-            size_t l = wcslen(line);
-            if (dbgLen + (int)l < (int)ARRAYSIZE(dbgBuf) - 1) {
-                CopyMemory(dbgBuf + dbgLen, line, l * sizeof(WCHAR));
-                dbgLen += (int)l;
-                dbgBuf[dbgLen] = 0;
-            }
-        }
+    IPrintDialogCallback *callback = NULL;
+    if (SUCCEEDED(CreatePrintDialogCallback(&callback))) {
+        DebugLog(L"Callback created");
     }
 
-    if (!dialogShown) {
-        WCHAR buf[512];
-        if (debugPrint && dbgLen > 0) {
-            StringCchPrintfW(buf, ARRAYSIZE(buf), L"Unable to show the print dialog.\r\n%s", dbgBuf);
-        } else {
-            StringCchPrintfW(buf, ARRAYSIZE(buf), L"Unable to show the print dialog. (0x%08X)", hr);
-        }
-        MessageBoxW(hwnd, buf, APP_TITLE, MB_ICONERROR);
+    PRINTDLGEXW pdx = {0};
+    pdx.lStructSize = sizeof(pdx);
+    pdx.hwndOwner = hwnd;
+    pdx.hDevMode = NULL;
+    pdx.hDevNames = NULL;
+    pdx.Flags = PD_RETURNDC | PD_ALLPAGES | PD_NOPAGENUMS | PD_NOSELECTION;
+    pdx.nMinPage = 1;
+    pdx.nMaxPage = 1;
+    pdx.nCopies = 1;
+    pdx.nStartPage = START_PAGE_GENERAL;
+    pdx.nPageRanges = 0;
+    pdx.nMaxPageRanges = 0;
+    pdx.lpPageRanges = NULL;
+    pdx.lpCallback = callback;
+
+    HRESULT hr = PrintDlgExW(&pdx);
+
+    if (FAILED(hr) || pdx.dwResultAction != PD_RESULT_PRINT) {
         if (pdx.hDC) DeleteDC(pdx.hDC);
         if (pdx.hDevMode && pdx.hDevMode != g_app.hDevMode) GlobalFree(pdx.hDevMode);
         if (pdx.hDevNames && pdx.hDevNames != g_app.hDevNames) GlobalFree(pdx.hDevNames);
         HeapFree(GetProcessHeap(), 0, buffer);
         if (xpsReady) XpsBackendShutdown(&xpsBackend);
         if (coInitialized) CoUninitialize();
+        if (callback) callback->lpVtbl->Release(callback);
         return;
     }
 
@@ -174,6 +128,7 @@ void DoPrint(HWND hwnd) {
         HeapFree(GetProcessHeap(), 0, buffer);
         if (xpsReady) XpsBackendShutdown(&xpsBackend);
         if (coInitialized) CoUninitialize();
+        if (callback) callback->lpVtbl->Release(callback);
         return;
     }
 
@@ -186,6 +141,7 @@ void DoPrint(HWND hwnd) {
         HeapFree(GetProcessHeap(), 0, buffer);
         if (xpsReady) XpsBackendShutdown(&xpsBackend);
         if (coInitialized) CoUninitialize();
+        if (callback) callback->lpVtbl->Release(callback);
         return;
     }
 
@@ -194,6 +150,7 @@ void DoPrint(HWND hwnd) {
         HeapFree(GetProcessHeap(), 0, buffer);
         if (xpsReady) XpsBackendShutdown(&xpsBackend);
         if (coInitialized) CoUninitialize();
+        if (callback) callback->lpVtbl->Release(callback);
         return;
     }
 
@@ -228,6 +185,21 @@ void DoPrint(HWND hwnd) {
         if (havePrinterName) {
             IPrintDocumentPackageTarget *pkgTarget = NULL;
             if (SUCCEEDED(XpsBackendCreateTarget(&xpsBackend, printerName, &pkgTarget))) {
+                DebugLog(L"Created IPrintDocumentPackageTarget");
+                // Try to hand the renderer to the preview channel if available.
+                // Probe for OS-provided preview target and log result (no-op otherwise).
+                IPrintPreviewDxgiPackageTarget *previewPkg = NULL;
+                GUID previewGuid;
+                if (CLSIDFromString(L"{1A6DD0AD-1E2A-4E99-A5BA-91F17818290E}", &previewGuid) == NOERROR) {
+                    HRESULT hrPrev = pkgTarget->lpVtbl->GetPackageTarget(pkgTarget, &previewGuid, &IID_IPrintPreviewDxgiPackageTarget, (void **)&previewPkg);
+                    if (SUCCEEDED(hrPrev) && previewPkg) {
+                        DebugLog(L"Got preview package target from package target factory");
+                        previewPkg->lpVtbl->Release(previewPkg);
+                    } else {
+                        DebugLog(L"GetPackageTarget for preview returned no target");
+                    }
+                }
+
                 IXpsOMPackageWriter *writer = NULL;
                 if (SUCCEEDED(XpsBackendCreateWriterForTarget(&xpsBackend, pkgTarget, &writer))) {
                     if (g_app.hDevMode) {
@@ -274,6 +246,7 @@ void DoPrint(HWND hwnd) {
     HeapFree(GetProcessHeap(), 0, buffer);
     if (xpsReady) XpsBackendShutdown(&xpsBackend);
     if (coInitialized) CoUninitialize();
+    if (callback) callback->lpVtbl->Release(callback);
 }
 
 static BOOL TryParseMargin(HWND dlg, int ctrlId, int *outThousandths) {
@@ -752,4 +725,49 @@ static BOOL IsValidGlobalHandle(HGLOBAL h) {
     if (!p) return FALSE;
     GlobalUnlock(h);
     return TRUE;
+}
+
+static void GetDefaultPrintHandles(HGLOBAL *outDevMode, HGLOBAL *outDevNames) {
+    if (outDevMode) *outDevMode = NULL;
+    if (outDevNames) *outDevNames = NULL;
+    PRINTDLGW pd = {0};
+    pd.lStructSize = sizeof(pd);
+    pd.Flags = PD_RETURNDEFAULT;
+    if (PrintDlgW(&pd)) {
+        if (outDevMode) *outDevMode = pd.hDevMode;
+        if (outDevNames) *outDevNames = pd.hDevNames;
+    } else {
+        if (pd.hDevMode) GlobalFree(pd.hDevMode);
+        if (pd.hDevNames) GlobalFree(pd.hDevNames);
+    }
+}
+
+static void EnsureComctl() {
+    static BOOL s_inited = FALSE;
+    if (s_inited) return;
+    INITCOMMONCONTROLSEX icc = {0};
+    icc.dwSize = sizeof(icc);
+    icc.dwICC = ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES;
+    InitCommonControlsEx(&icc);
+    s_inited = TRUE;
+}
+
+static HGLOBAL DuplicateGlobalHandle(HGLOBAL h) {
+    if (!IsValidGlobalHandle(h)) return NULL;
+    SIZE_T size = GlobalSize(h);
+    if (size == 0) return NULL;
+    HGLOBAL dup = GlobalAlloc(GMEM_MOVEABLE, size);
+    if (!dup) return NULL;
+    void *src = GlobalLock(h);
+    void *dst = GlobalLock(dup);
+    if (!src || !dst) {
+        if (dst) GlobalUnlock(dup);
+        GlobalFree(dup);
+        if (src) GlobalUnlock(h);
+        return NULL;
+    }
+    CopyMemory(dst, src, size);
+    GlobalUnlock(h);
+    GlobalUnlock(dup);
+    return dup;
 }

@@ -12,6 +12,9 @@
 #include "retropad.h"
 #include "print.h"
 
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(linker,"/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
 typedef HWND (WINAPI *PFNHTMLHELPW)(HWND, LPCWSTR, UINT, ULONG_PTR);
 
 AppState g_app = {0};

@@ -1,10 +1,31 @@
 #define INITGUID
 #include <stddef.h>
+#pragma warning(push)
+#pragma warning(disable : 4201) // silence nameless struct/union from Windows headers
 #include <dxgi.h>
 #include <d3d11.h>
 #include <PrintPreview.h>
+#pragma warning(pop)
 #include "preview_target.h"
 #include "rendering.h"
+#include <strsafe.h>
+
+static void DebugLog(const WCHAR *msg) {
+    WCHAR path[MAX_PATH];
+    DWORD len = GetTempPathW(ARRAYSIZE(path), path);
+    if (len == 0 || len >= ARRAYSIZE(path)) return;
+    if (FAILED(StringCchCatW(path, ARRAYSIZE(path), L"retropad_preview.log"))) return;
+    HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    WCHAR line[512];
+    StringCchPrintfW(line, ARRAYSIZE(line), L"[%02u:%02u:%02u.%03u] %s\r\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, msg ? msg : L"(null)");
+    int bytes = (int)(lstrlenW(line) * sizeof(WCHAR));
+    WriteFile(h, line, bytes, &written, NULL);
+    CloseHandle(h);
+}
 
 // {1A6DD0AD-1E2A-4E99-A5BA-91F17818290E}
 DEFINE_GUID(IID_IPrintPreviewDxgiPackageTarget, 0x1a6dd0ad, 0x1e2a, 0x4e99, 0xa5, 0xba, 0x91, 0xf1, 0x78, 0x18, 0x29, 0x0e);
@@ -22,7 +43,7 @@ struct PreviewTarget {
 static HRESULT STDMETHODCALLTYPE Prev_QueryInterface(IPrintPreviewDxgiPackageTarget *self, REFIID riid, void **ppv);
 static ULONG STDMETHODCALLTYPE Prev_AddRef(IPrintPreviewDxgiPackageTarget *self);
 static ULONG STDMETHODCALLTYPE Prev_Release(IPrintPreviewDxgiPackageTarget *self);
-static HRESULT STDMETHODCALLTYPE Prev_SetJobPageCount(IPrintPreviewDxgiPackageTarget *self, UINT32 countType, UINT32 count);
+static HRESULT STDMETHODCALLTYPE Prev_SetJobPageCount(IPrintPreviewDxgiPackageTarget *self, PageCountType countType, UINT32 count);
 static HRESULT STDMETHODCALLTYPE Prev_DrawPage(IPrintPreviewDxgiPackageTarget *self, UINT32 jobPageNumber, IDXGISurface *pageImage, float dpiX, float dpiY);
 static HRESULT STDMETHODCALLTYPE Prev_InvalidatePreview(IPrintPreviewDxgiPackageTarget *self);
 
@@ -39,6 +60,9 @@ typedef struct PreviewSurfaceTarget {
     int dpiY;
     HFONT font;
     HFONT oldFont;
+    UINT32 requestedPage;
+    UINT32 currentPage;
+    BOOL renderThisPage;
 } PreviewSurfaceTarget;
 
 static BOOL PrevSurfGetMetrics(void *userData, PrintMetrics *metrics) {
@@ -85,6 +109,11 @@ static BOOL PrevSurfAbortDocument(void *userData) {
 static BOOL PrevSurfBeginPage(void *userData, int pageNumber) {
     (void)pageNumber;
     PreviewSurfaceTarget *t = (PreviewSurfaceTarget *)userData;
+    t->currentPage = (UINT32)pageNumber;
+    t->renderThisPage = (t->requestedPage == 0 || t->requestedPage == (UINT32)pageNumber);
+    if (!t->renderThisPage) {
+        return TRUE;
+    }
     RECT rc = {0, 0, t->width, t->height};
     HBRUSH white = (HBRUSH)GetStockObject(WHITE_BRUSH);
     FillRect(t->hdc, &rc, white);
@@ -99,6 +128,7 @@ static BOOL PrevSurfEndPage(void *userData) {
 static BOOL PrevSurfDrawText(void *userData, int x, int y, const WCHAR *text, int length) {
     PreviewSurfaceTarget *t = (PreviewSurfaceTarget *)userData;
     if (!t || !text) return FALSE;
+    if (!t->renderThisPage) return TRUE;
     return TextOutW(t->hdc, x, y, text, length);
 }
 
@@ -145,7 +175,7 @@ static ULONG STDMETHODCALLTYPE Prev_Release(IPrintPreviewDxgiPackageTarget *self
     return (ULONG)ref;
 }
 
-static HRESULT STDMETHODCALLTYPE Prev_SetJobPageCount(IPrintPreviewDxgiPackageTarget *self, UINT32 countType, UINT32 count) {
+static HRESULT STDMETHODCALLTYPE Prev_SetJobPageCount(IPrintPreviewDxgiPackageTarget *self, PageCountType countType, UINT32 count) {
     (void)self;
     (void)countType;
     (void)count;
@@ -155,6 +185,7 @@ static HRESULT STDMETHODCALLTYPE Prev_SetJobPageCount(IPrintPreviewDxgiPackageTa
 static HRESULT STDMETHODCALLTYPE Prev_DrawPage(IPrintPreviewDxgiPackageTarget *self, UINT32 jobPageNumber, IDXGISurface *pageImage, float dpiX, float dpiY) {
     PreviewTarget *t = FromIface(self);
     if (!t || !t->ctx || !pageImage) return E_POINTER;
+    DebugLog(L"DrawPage start");
 
     DXGI_SURFACE_DESC desc = {0};
     HRESULT hr = pageImage->lpVtbl->GetDesc(pageImage, &desc);
@@ -166,12 +197,19 @@ static HRESULT STDMETHODCALLTYPE Prev_DrawPage(IPrintPreviewDxgiPackageTarget *s
 
     IDXGISurface1 *surf1 = NULL;
     HDC hdc = NULL;
-    hr = pageImage->lpVtbl->QueryInterface(pageImage, &IID_IDXGISurface1, (void **)&surf1);
-    if (SUCCEEDED(hr) && surf1) {
-        hr = surf1->lpVtbl->GetDC(surf1, FALSE, &hdc);
+    HRESULT hrDc = pageImage->lpVtbl->QueryInterface(pageImage, &IID_IDXGISurface1, (void **)&surf1);
+    if (SUCCEEDED(hrDc) && surf1) {
+        hrDc = surf1->lpVtbl->GetDC(surf1, FALSE, &hdc);
     }
 
-    if (SUCCEEDED(hr) && hdc) {
+    // Always start with a white surface so skipped pages stay blank.
+    BYTE *row = rect.pBits;
+    for (UINT y = 0; y < desc.Height; ++y) {
+        ZeroMemory(row, desc.Width * 4);
+        row += rect.Pitch;
+    }
+
+    if (SUCCEEDED(hrDc) && hdc) {
         PreviewSurfaceTarget pvt = {0};
         pvt.base.ops = &g_previewOps;
         pvt.base.userData = &pvt;
@@ -182,6 +220,9 @@ static HRESULT STDMETHODCALLTYPE Prev_DrawPage(IPrintPreviewDxgiPackageTarget *s
         pvt.dpiY = (int)(dpiY > 0 ? dpiY : t->dpiY);
         pvt.font = NULL;
         pvt.oldFont = NULL;
+        pvt.requestedPage = jobPageNumber;
+        pvt.currentPage = 0;
+        pvt.renderThisPage = FALSE;
 
         RenderDocument(t->ctx, &pvt.base);
 
@@ -191,14 +232,62 @@ static HRESULT STDMETHODCALLTYPE Prev_DrawPage(IPrintPreviewDxgiPackageTarget *s
         if (pvt.font) {
             DeleteObject(pvt.font);
         }
+        DebugLog(L"DrawPage rendered via DXGI GetDC");
     } else {
-        // fallback: clear surface white
-        BYTE *row = rect.pBits;
-        for (UINT y = 0; y < desc.Height; ++y) {
-            ZeroMemory(row, desc.Width * 4);
-            row += rect.Pitch;
+        // Fallback: render into a DIB and copy into the mapped surface when GetDC is unavailable.
+        DebugLog(L"DrawPage fallback to DIB");
+        BITMAPINFO bmi = {0};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = (LONG)desc.Width;
+        bmi.bmiHeader.biHeight = -(LONG)desc.Height; // top-down
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        VOID *dibBits = NULL;
+        HDC memDC = CreateCompatibleDC(NULL);
+        HBITMAP hbm = CreateDIBSection(memDC, &bmi, DIB_RGB_COLORS, &dibBits, NULL, 0);
+        HBITMAP oldBmp = NULL;
+        if (memDC && hbm && dibBits) {
+            oldBmp = (HBITMAP)SelectObject(memDC, hbm);
+            RECT rc = {0, 0, (LONG)desc.Width, (LONG)desc.Height};
+            HBRUSH white = (HBRUSH)GetStockObject(WHITE_BRUSH);
+            FillRect(memDC, &rc, white);
+
+            PreviewSurfaceTarget pvt = {0};
+            pvt.base.ops = &g_previewOps;
+            pvt.base.userData = &pvt;
+            pvt.hdc = memDC;
+            pvt.width = (int)desc.Width;
+            pvt.height = (int)desc.Height;
+            pvt.dpiX = (int)(dpiX > 0 ? dpiX : t->dpiX);
+            pvt.dpiY = (int)(dpiY > 0 ? dpiY : t->dpiY);
+            pvt.font = NULL;
+            pvt.oldFont = NULL;
+            pvt.requestedPage = jobPageNumber;
+            pvt.currentPage = 0;
+            pvt.renderThisPage = FALSE;
+
+            RenderDocument(t->ctx, &pvt.base);
+
+            if (pvt.oldFont) SelectObject(memDC, pvt.oldFont);
+            if (pvt.font) DeleteObject(pvt.font);
+
+            BYTE *srcRow = (BYTE *)dibBits;
+            BYTE *dstRow = rect.pBits;
+            UINT rowBytes = desc.Width * 4;
+            for (UINT y = 0; y < desc.Height; ++y) {
+                CopyMemory(dstRow, srcRow, rowBytes);
+                srcRow += rowBytes;
+                dstRow += rect.Pitch;
+            }
         }
+        if (oldBmp) SelectObject(memDC, oldBmp);
+        if (hbm) DeleteObject(hbm);
+        if (memDC) DeleteDC(memDC);
+        hr = S_OK;
     }
+
     if (surf1 && hdc) {
         surf1->lpVtbl->ReleaseDC(surf1, NULL);
     }

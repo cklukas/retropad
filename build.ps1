@@ -2,6 +2,8 @@ $ErrorActionPreference = "Stop"
 
 # Try a few known Visual Studio toolchain setups and run nmake.
 $candidates = @(
+    @{ Path = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"; Args = "-arch=amd64" },
+    @{ Path = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"; Args = "" },
     @{ Path = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"; Args = "-arch=amd64" },
     @{ Path = "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"; Args = "-arch=amd64" },
     @{ Path = "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\Common7\Tools\VsDevCmd.bat"; Args = "-arch=amd64" },
