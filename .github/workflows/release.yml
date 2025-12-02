@@ -1,0 +1,65 @@
+name: Release Builds
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x86, x64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate Visual Studio toolchain
+        id: vs
+        shell: pwsh
+        run: |
+          $vswhere = "${Env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
+          $vsPath = & $vswhere -latest -prerelease -requiresAny `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
+            -property installationPath
+          if (-not $vsPath) { throw "Visual Studio with C++ tools not found" }
+          "vsPath=$vsPath" >> $env:GITHUB_OUTPUT
+
+      - name: Build (${{ matrix.arch }})
+        shell: pwsh
+        run: |
+          $vsDevCmd = Join-Path '${{ steps.vs.outputs.vsPath }}' 'Common7\Tools\VsDevCmd.bat'
+          if (-not (Test-Path $vsDevCmd)) { throw "VsDevCmd not found at $vsDevCmd" }
+          $arch = '${{ matrix.arch }}'
+          $cmd = "call `"$vsDevCmd`" -arch=$arch && nmake /f makefile HHC=echo OUTDIR=binaries"
+          cmd /c $cmd
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $outDir = "artifacts/retropad-${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          Copy-Item -Path "binaries\retropad.exe" -Destination $outDir -Force
+          if (Test-Path "binaries\retropad.chm") {
+            Copy-Item -Path "binaries\retropad.chm" -Destination $outDir -Force
+          }
+          Compress-Archive -Path "$outDir\*" -DestinationPath "retropad-${{ matrix.arch }}.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: retropad-${{ matrix.arch }}
+          path: retropad-${{ matrix.arch }}.zip
+
+      - name: Publish GitHub Release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: retropad-${{ matrix.arch }}.zip
