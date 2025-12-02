@@ -77,6 +77,7 @@ static HFONT CreatePrintFont(HDC hdc);
 static int ComputeTotalPages(const WCHAR *text, int charsPerLine, int linesPerPage);
 static void SplitHeaderFooterSegments(const WCHAR *format, const WCHAR *fileName, int pageNumber, int totalPages, const WCHAR *dateStr, const WCHAR *timeStr, WCHAR *left, size_t cchLeft, WCHAR *center, size_t cchCenter, WCHAR *right, size_t cchRight);
 static void ShowHelp(HWND hwnd);
+static LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
 
 static BOOL GetEditText(HWND hwndEdit, WCHAR **bufferOut, int *lengthOut) {
     int length = GetWindowTextLengthW(hwndEdit);
@@ -296,6 +297,9 @@ static void CreateEditControl(HWND hwnd) {
     }
     if (g_app.hwndEdit && g_app.hFont) {
         ApplyFontToEdit(g_app.hwndEdit, g_app.hFont);
+    }
+    if (g_app.hwndEdit) {
+        SetWindowSubclass(g_app.hwndEdit, EditSubclassProc, 1, 0);
     }
     SendMessageW(g_app.hwndEdit, EM_SETLIMITTEXT, 0, 0); // allow large files
     UpdateLayout(hwnd);
@@ -1408,6 +1412,28 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data) {
+    (void)id;
+    (void)data;
+    switch (msg) {
+    case WM_KEYUP:
+    case WM_LBUTTONUP:
+    case WM_RBUTTONUP:
+    case WM_MBUTTONUP:
+    case WM_MOUSEWHEEL:
+    case WM_HSCROLL:
+    case WM_VSCROLL:
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+    case EM_SETSEL: {
+        HWND parent = GetParent(hwnd);
+        if (parent) UpdateStatusBar(parent);
+        break;
+    }
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
