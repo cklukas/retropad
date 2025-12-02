@@ -421,7 +421,6 @@ static void DoFileNew(HWND hwnd) {
 
 static void SetWordWrap(HWND hwnd, BOOL enabled) {
     if (g_app.wordWrap == enabled) return;
-    g_app.wordWrap = enabled;
     HWND edit = g_app.hwndEdit;
     WCHAR *text = NULL;
     int len = 0;
@@ -431,6 +430,7 @@ static void SetWordWrap(HWND hwnd, BOOL enabled) {
     DWORD start = 0, end = 0;
     SendMessageW(edit, EM_GETSEL, (WPARAM)&start, (LPARAM)&end);
 
+    g_app.wordWrap = enabled;
     CreateEditControl(hwnd);
     SetWindowTextW(g_app.hwndEdit, text);
     SendMessageW(g_app.hwndEdit, EM_SETSEL, start, end);
@@ -1347,6 +1347,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
         UINT newDpi = LOWORD(wParam);
         if (!newDpi) newDpi = GetWindowDpi(hwnd);
+        BOOL fontUpdated = FALSE;
         if (g_app.hFont) {
             LOGFONTW lf;
             if (GetObjectW(g_app.hFont, sizeof(lf), &lf)) {
@@ -1359,12 +1360,16 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 if (newFont) {
                     DeleteObject(g_app.hFont);
                     g_app.hFont = newFont;
+                    fontUpdated = TRUE;
                 }
             }
         } else {
             g_app.hFont = CreateDefaultUIFont(hwnd);
+            fontUpdated = (g_app.hFont != NULL);
         }
-        g_app.fontDpi = newDpi;
+        if (fontUpdated) {
+            g_app.fontDpi = newDpi;
+        }
         if (g_app.hwndEdit && g_app.hFont) {
             ApplyFontToEdit(g_app.hwndEdit, g_app.hFont);
         }
