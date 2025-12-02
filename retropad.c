@@ -23,6 +23,8 @@ typedef struct AppState {
     HWND hwndEdit;
     HWND hwndStatus;
     HFONT hFont;
+    UINT fontDpi;
+    BOOL fontIsDefault;
     HGLOBAL hDevMode;
     HGLOBAL hDevNames;
     RECT marginsThousandths; // left/top/right/bottom in thousandths of an inch
@@ -68,6 +70,7 @@ static BOOL LoadDocumentFromPath(HWND hwnd, LPCWSTR path);
 static INT_PTR CALLBACK GoToDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam);
 static INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam);
 static INT_PTR CALLBACK PageSetupDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam);
+static HFONT CreateDefaultUIFont(HWND hwnd);
 static void DoPageSetup(HWND hwnd);
 static void DoPrint(HWND hwnd);
 static HFONT CreatePrintFont(HDC hdc);
@@ -247,6 +250,36 @@ static void ApplyFontToEdit(HWND hwndEdit, HFONT font) {
     SendMessageW(hwndEdit, WM_SETFONT, (WPARAM)font, TRUE);
 }
 
+static UINT GetWindowDpi(HWND hwnd) {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        typedef UINT (WINAPI *GETDPIFORWINDOW)(HWND);
+        GETDPIFORWINDOW pGetDpiForWindow = (GETDPIFORWINDOW)GetProcAddress(user32, "GetDpiForWindow");
+        if (pGetDpiForWindow) {
+            return pGetDpiForWindow(hwnd);
+        }
+    }
+    HDC hdc = GetDC(hwnd);
+    UINT dpi = 96;
+    if (hdc) {
+        dpi = (UINT)GetDeviceCaps(hdc, LOGPIXELSY);
+        ReleaseDC(hwnd, hdc);
+    }
+    return dpi;
+}
+
+static HFONT CreateDefaultUIFont(HWND hwnd) {
+    LOGFONTW lf = {0};
+    UINT dpi = GetWindowDpi(hwnd);
+    lf.lfHeight = -MulDiv(10, (int)dpi, 72); // 10pt UI font at current DPI
+    lf.lfWeight = FW_NORMAL;
+    lf.lfCharSet = DEFAULT_CHARSET;
+    StringCchCopyW(lf.lfFaceName, ARRAYSIZE(lf.lfFaceName), L"Segoe UI");
+    g_app.fontDpi = dpi;
+    g_app.fontIsDefault = TRUE;
+    return CreateFontIndirectW(&lf);
+}
+
 static void CreateEditControl(HWND hwnd) {
     if (g_app.hwndEdit) {
         DestroyWindow(g_app.hwndEdit);
@@ -258,6 +291,9 @@ static void CreateEditControl(HWND hwnd) {
     }
 
     g_app.hwndEdit = CreateWindowExW(0, L"EDIT", NULL, style, 0, 0, 0, 0, hwnd, (HMENU)1, g_hInst, NULL);
+    if (!g_app.hFont) {
+        g_app.hFont = CreateDefaultUIFont(hwnd);
+    }
     if (g_app.hwndEdit && g_app.hFont) {
         ApplyFontToEdit(g_app.hwndEdit, g_app.hFont);
     }
@@ -536,6 +572,8 @@ static void DoSelectFont(HWND hwnd) {
         if (newFont) {
             if (g_app.hFont) DeleteObject(g_app.hFont);
             g_app.hFont = newFont;
+            g_app.fontIsDefault = FALSE;
+            g_app.fontDpi = GetWindowDpi(hwnd);
             ApplyFontToEdit(g_app.hwndEdit, g_app.hFont);
             UpdateLayout(hwnd);
         }
@@ -1296,6 +1334,40 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         UpdateLayout(hwnd);
         UpdateStatusBar(hwnd);
         return 0;
+    case WM_DPICHANGED: {
+        RECT *prcNew = (RECT *)lParam;
+        if (prcNew) {
+            MoveWindow(hwnd, prcNew->left, prcNew->top,
+                       prcNew->right - prcNew->left,
+                       prcNew->bottom - prcNew->top, TRUE);
+        }
+        UINT newDpi = LOWORD(wParam);
+        if (!newDpi) newDpi = GetWindowDpi(hwnd);
+        if (g_app.hFont) {
+            LOGFONTW lf;
+            if (GetObjectW(g_app.hFont, sizeof(lf), &lf)) {
+                UINT oldDpi = g_app.fontDpi ? g_app.fontDpi : 96;
+                lf.lfHeight = MulDiv(lf.lfHeight, (int)newDpi, (int)oldDpi);
+                if (lf.lfWidth != 0) {
+                    lf.lfWidth = MulDiv(lf.lfWidth, (int)newDpi, (int)oldDpi);
+                }
+                HFONT newFont = CreateFontIndirectW(&lf);
+                if (newFont) {
+                    DeleteObject(g_app.hFont);
+                    g_app.hFont = newFont;
+                }
+            }
+        } else {
+            g_app.hFont = CreateDefaultUIFont(hwnd);
+        }
+        g_app.fontDpi = newDpi;
+        if (g_app.hwndEdit && g_app.hFont) {
+            ApplyFontToEdit(g_app.hwndEdit, g_app.hFont);
+        }
+        UpdateLayout(hwnd);
+        UpdateStatusBar(hwnd);
+        return 0;
+    }
     case WM_DROPFILES: {
         HDROP hDrop = (HDROP)wParam;
         WCHAR path[MAX_PATH_BUFFER];
