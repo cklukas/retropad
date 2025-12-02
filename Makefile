@@ -6,6 +6,10 @@ CC=cl
 RC=rc
 !ENDIF
 
+!IFNDEF RCFLAGS
+RCFLAGS=/nologo /utf8
+!ENDIF
+
 OUTDIR=binaries
 CFLAGS=/nologo /DUNICODE /D_UNICODE /W4 /EHsc
 LDFLAGS=/nologo
@@ -28,7 +32,7 @@ $(OUTDIR)\file_io.obj: $(OUTDIR) file_io.c file_io.h resource.h
 	$(CC) $(CFLAGS) /Fo$(OUTDIR)\ /c file_io.c
 
 $(OUTDIR)\retropad.res: $(OUTDIR) retropad.rc resource.h res\retropad.ico
-	$(RC) /fo $(OUTDIR)\retropad.res retropad.rc
+	$(RC) $(RCFLAGS) /fo $(OUTDIR)\retropad.res retropad.rc
 
 clean:
 	-del /q $(OUTDIR)\retropad.exe $(OUTDIR)\retropad.obj $(OUTDIR)\file_io.obj $(OUTDIR)\retropad.res $(OUTDIR)\*.pdb 2> NUL
