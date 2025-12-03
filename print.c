@@ -1,3 +1,9 @@
+#define WINVER          0x0601
+#define _WIN32_WINNT    0x0601
+#define _WIN32_WINDOWS  0x0601
+#define _WIN32_IE       0x0700
+#define NTDDI_VERSION   0x06010000
+
 #include <windows.h>
 #include <commdlg.h>
 #include <commctrl.h>
@@ -12,6 +18,45 @@
 #include "print_dialog_callback.h"
 #include <PrintPreview.h>
 #include <strsafe.h>
+
+#ifndef __IPrintDialogCallback2_INTERFACE_DEFINED__
+typedef struct IPrintDialogCallback2 { const void *lpVtbl; } IPrintDialogCallback2;
+#endif
+#ifndef LPPAGERANGE
+typedef struct tagPAGERANGE { DWORD nFromPage; DWORD nToPage; } PAGERANGE, *LPPAGERANGE;
+#endif
+#ifndef IID_IPrintPreviewDxgiPackageTarget
+EXTERN_C const IID IID_IPrintPreviewDxgiPackageTarget;
+#endif
+#ifndef __IPrintPreviewDxgiPackageTarget_INTERFACE_DEFINED__
+typedef struct IPrintPreviewDxgiPackageTarget { const void *lpVtbl; } IPrintPreviewDxgiPackageTarget;
+#endif
+
+/* Compatibility: extended PRINTDLGEXW including dwCallbackSize when headers omit it. */
+typedef struct PRINTDLGEXW_EX {
+    DWORD        lStructSize;
+    HWND         hwndOwner;
+    HGLOBAL      hDevMode;
+    HGLOBAL      hDevNames;
+    HDC          hDC;
+    DWORD        Flags;
+    DWORD        Flags2;
+    DWORD        ExclusionFlags;
+    DWORD        nPageRanges;
+    DWORD        nMaxPageRanges;
+    LPPAGERANGE  lpPageRanges;
+    DWORD        nMinPage;
+    DWORD        nMaxPage;
+    DWORD        nCopies;
+    HINSTANCE    hInstance;
+    LPCWSTR      lpPrintTemplateName;
+    LPUNKNOWN    lpCallback;
+    DWORD        nPropertyPages;
+    HPROPSHEETPAGE *lphPropertyPages;
+    DWORD        nStartPage;
+    DWORD        dwResultAction;
+    DWORD        dwCallbackSize;
+} PRINTDLGEXW_EX;
 
 static void DebugLog(const WCHAR *msg) {
     WCHAR path[MAX_PATH];
@@ -30,12 +75,13 @@ static void DebugLog(const WCHAR *msg) {
     CloseHandle(h);
 }
 
-#ifndef PD_USEXPSCONVERSION
-#define PD_USEXPSCONVERSION 0x00010000
+#ifndef PD_ENABLEPRINTPREVIEW
+#define PD_ENABLEPRINTPREVIEW 0x00200000
 #endif
 
 // Print context used by the modern print dialog preview callback.
 PrintRenderContext g_printContext = {0};
+static IPrintDialogCallback *g_printCallback = NULL;
 static BOOL TryParseMargin(HWND dlg, int ctrlId, int *outThousandths);
 static void SetMarginText(HWND dlg, int ctrlId, int thousandths);
 static INT_PTR CALLBACK PageSetupDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -55,7 +101,7 @@ void DoPageSetup(HWND hwnd) {
 
 void DoPrint(HWND hwnd) {
     DebugLog(L"DoPrint invoked");
-    HRESULT hrCo = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    HRESULT hrCo = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     BOOL coInitialized = SUCCEEDED(hrCo);
     if (hrCo == RPC_E_CHANGED_MODE) {
         coInitialized = FALSE;
@@ -74,9 +120,6 @@ void DoPrint(HWND hwnd) {
     }
     GetWindowTextW(g_app.hwndEdit, buffer, len + 1);
 
-    // PD_USEXPSCONVERSION triggers E_HANDLE on modern Windows when no custom template is provided.
-    DWORD baseFlags = PD_ALLPAGES;
-    DWORD baseFlagsNoXps = PD_ALLPAGES;
     PrintRenderContext ctx = {
         .text = buffer,
         .fullPath = g_app.currentPath[0] ? g_app.currentPath : UNTITLED_NAME,
@@ -88,36 +131,55 @@ void DoPrint(HWND hwnd) {
     // Make the context available to the preview callback once the dialog provides a site.
     g_printContext = ctx;
 
-    IPrintDialogCallback *callback = NULL;
-    if (SUCCEEDED(CreatePrintDialogCallback(&callback))) {
-        DebugLog(L"Callback created");
+    if (!g_printCallback) {
+        if (SUCCEEDED(CreatePrintDialogCallback(&g_printCallback))) {
+            DebugLog(L"Callback created and stored globally");
+        } else {
+            DebugLog(L"CreatePrintDialogCallback failed; aborting print");
+            if (xpsReady) XpsBackendShutdown(&xpsBackend);
+            if (coInitialized) CoUninitialize();
+            HeapFree(GetProcessHeap(), 0, buffer);
+            return;
+        }
     }
 
-    PRINTDLGEXW pdx = {0};
-    pdx.lStructSize = sizeof(pdx);
-    pdx.hwndOwner = hwnd;
-    pdx.hDevMode = NULL;
-    pdx.hDevNames = NULL;
-    pdx.Flags = PD_RETURNDC | PD_ALLPAGES | PD_NOPAGENUMS | PD_NOSELECTION;
-    pdx.nMinPage = 1;
-    pdx.nMaxPage = 1;
-    pdx.nCopies = 1;
-    pdx.nStartPage = START_PAGE_GENERAL;
-    pdx.nPageRanges = 0;
-    pdx.nMaxPageRanges = 0;
-    pdx.lpPageRanges = NULL;
-    pdx.lpCallback = callback;
+    PRINTDLGEXW_EX pdx = {0};
+    pdx.lStructSize    = sizeof(PRINTDLGEXW_EX);
+    pdx.dwCallbackSize = sizeof(PRINTDLGEXW_EX); // non-zero enables callback usage
+    pdx.hwndOwner      = hwnd;
+    pdx.hDevMode       = g_app.hDevMode ? DuplicateGlobalHandle(g_app.hDevMode) : NULL;
+    pdx.hDevNames      = g_app.hDevNames ? DuplicateGlobalHandle(g_app.hDevNames) : NULL;
+    // Only the valid modern-preview flag combo (0x00A80000)
+    pdx.Flags          = PD_ENABLEPRINTPREVIEW |
+                         PD_USEDEVMODECOPIESANDCOLLATE |
+                         PD_NOCURRENTPAGE;
+    pdx.nCopies        = 1;
+    pdx.nMinPage       = 1;
+    pdx.nMaxPage       = 0xFFFF;
+    #pragma warning(push)
+    #pragma warning(disable:4133) // LPUNKNOWN expects exact pointer; keep identity, silence type warning
+    pdx.lpCallback     = (LPUNKNOWN)g_printCallback;
+    #pragma warning(pop)
 
-    HRESULT hr = PrintDlgExW(&pdx);
+    WCHAR dbg[256];
+    StringCchPrintfW(dbg, ARRAYSIZE(dbg),
+        L"Calling PrintDlgExW: lStructSize=%lu dwCallbackSize=%lu Flags=0x%08lx lpCallback=%p",
+        pdx.lStructSize, pdx.dwCallbackSize, pdx.Flags, pdx.lpCallback);
+    DebugLog(dbg);
+
+    DebugLog(L"DoPrint: calling PrintDlgExW with PD_ENABLEPRINTPREVIEW");
+    HRESULT hr = PrintDlgExW((PRINTDLGEXW*)&pdx);
 
     if (FAILED(hr) || pdx.dwResultAction != PD_RESULT_PRINT) {
+        StringCchPrintfW(dbg, ARRAYSIZE(dbg),
+            L"PrintDlgExW cancelled or failed hr=0x%08lX result=%u", hr, pdx.dwResultAction);
+        DebugLog(dbg);
         if (pdx.hDC) DeleteDC(pdx.hDC);
         if (pdx.hDevMode && pdx.hDevMode != g_app.hDevMode) GlobalFree(pdx.hDevMode);
         if (pdx.hDevNames && pdx.hDevNames != g_app.hDevNames) GlobalFree(pdx.hDevNames);
         HeapFree(GetProcessHeap(), 0, buffer);
         if (xpsReady) XpsBackendShutdown(&xpsBackend);
         if (coInitialized) CoUninitialize();
-        if (callback) callback->lpVtbl->Release(callback);
         return;
     }
 
@@ -128,7 +190,6 @@ void DoPrint(HWND hwnd) {
         HeapFree(GetProcessHeap(), 0, buffer);
         if (xpsReady) XpsBackendShutdown(&xpsBackend);
         if (coInitialized) CoUninitialize();
-        if (callback) callback->lpVtbl->Release(callback);
         return;
     }
 
@@ -141,7 +202,6 @@ void DoPrint(HWND hwnd) {
         HeapFree(GetProcessHeap(), 0, buffer);
         if (xpsReady) XpsBackendShutdown(&xpsBackend);
         if (coInitialized) CoUninitialize();
-        if (callback) callback->lpVtbl->Release(callback);
         return;
     }
 
@@ -150,7 +210,6 @@ void DoPrint(HWND hwnd) {
         HeapFree(GetProcessHeap(), 0, buffer);
         if (xpsReady) XpsBackendShutdown(&xpsBackend);
         if (coInitialized) CoUninitialize();
-        if (callback) callback->lpVtbl->Release(callback);
         return;
     }
 
@@ -188,7 +247,7 @@ void DoPrint(HWND hwnd) {
                 DebugLog(L"Created IPrintDocumentPackageTarget");
                 // Try to hand the renderer to the preview channel if available.
                 // Probe for OS-provided preview target and log result (no-op otherwise).
-                IPrintPreviewDxgiPackageTarget *previewPkg = NULL;
+                IUnknown *previewPkg = NULL;
                 GUID previewGuid;
                 if (CLSIDFromString(L"{1A6DD0AD-1E2A-4E99-A5BA-91F17818290E}", &previewGuid) == NOERROR) {
                     HRESULT hrPrev = pkgTarget->lpVtbl->GetPackageTarget(pkgTarget, &previewGuid, &IID_IPrintPreviewDxgiPackageTarget, (void **)&previewPkg);
@@ -246,7 +305,8 @@ void DoPrint(HWND hwnd) {
     HeapFree(GetProcessHeap(), 0, buffer);
     if (xpsReady) XpsBackendShutdown(&xpsBackend);
     if (coInitialized) CoUninitialize();
-    if (callback) callback->lpVtbl->Release(callback);
+    // Optional: release the global callback here if you don't want to reuse it.
+    // if (g_printCallback) { g_printCallback->lpVtbl->Release(g_printCallback); g_printCallback = NULL; }
 }
 
 static BOOL TryParseMargin(HWND dlg, int ctrlId, int *outThousandths) {

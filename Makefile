@@ -14,9 +14,17 @@ RCFLAGS=/nologo /utf8
 HHC="C:\Program Files (x86)\HTML Help Workshop\hhc.exe"
 !ENDIF
 
+# Optional: allow overriding Windows SDK selection (useful with clang-cl or custom layouts)
+!IFDEF SDKVER
+WINSDKVER_FLAG=/winsdkversion:$(SDKVER)
+!ENDIF
+!IFDEF WINSDKROOT
+WINSDKROOT_FLAG=/winsysroot "$(WINSDKROOT)"
+!ENDIF
+
 OUTDIR=binaries
-CFLAGS=/nologo /DUNICODE /D_UNICODE /W4 /EHsc
-LDFLAGS=/nologo
+CFLAGS=/nologo /DUNICODE /D_UNICODE /DWINVER=0x0601 /D_WIN32_WINNT=0x0601 /DNTDDI_VERSION=0x06010000 /W4 /WX /EHsc $(WINSDKVER_FLAG) $(WINSDKROOT_FLAG)
+LDFLAGS=/nologo $(WINSDKROOT_FLAG)
 LIBS=user32.lib gdi32.lib comdlg32.lib comctl32.lib shell32.lib ole32.lib xpsprint.lib ole32.lib xpsprint.lib ole32.lib dxgi.lib d3d11.lib uuid.lib
 
 OBJS=$(OUTDIR)\retropad.obj $(OUTDIR)\file_io.obj $(OUTDIR)\print.obj $(OUTDIR)\rendering.obj $(OUTDIR)\print_dialog_callback.obj $(OUTDIR)\preview_target.obj $(OUTDIR)\xps_backend.obj $(OUTDIR)\xps_target.obj $(OUTDIR)\retropad.res

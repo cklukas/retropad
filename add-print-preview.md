@@ -32,3 +32,20 @@
 6. Documentation & testing
    - [ ] Update README/help describing the new preview requirements  
    - [ ] Test with multiple printers and DPI settings to validate preview accuracy
+
+
+## Status
+
+Requirement (Windows 11 24H2),Your Implementation,Status
+Manifest: DPI-aware + long-path + printerDriverIsolation,Perfect,Pass
+`PD_RETURNDC,PD_ALLPAGES,PD_NOPAGENUMS
+"nMinPage = 1, nMaxPage = 1",Correct,Pass
+No PD_USEXPSCONVERSION,Removed,Pass
+lpCallback = exact IPrintDialogCallback* (no cast),Fixed,Pass
+Callback implements IPrintDialogCallback2 with 8 methods including SetPrintTicket,Done,Pass
+IPrintDialogCallback2 is first in struct,Done,Pass
+CreatePrintDialogCallback returns pointer to object base,Done,Pass
+Callback lifetime outlives PrintDlgExW (global g_printCallback),Done,Pass
+SetSite sets impl->ctx = &g_printContext,Done,Pass
+RefreshPreviewTarget uses real IPrintDialogServices,Done,Pass
+DrawPage uses DXGI + DIB fallback,Done,Pass
