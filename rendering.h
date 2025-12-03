@@ -8,6 +8,7 @@ typedef struct PrintRenderContext {
     RECT marginsThousandths;
     const WCHAR *headerText;
     const WCHAR *footerText;
+    BOOL testMode;
 } PrintRenderContext;
 
 typedef struct PrintMetrics {

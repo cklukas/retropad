@@ -1,7 +1,6 @@
 #include <windows.h>
 #include <stddef.h>
 #include <ocidl.h>
-#include <PrintPreview.h>
 #include <strsafe.h>
 
 #include "print_dialog_callback.h"
@@ -11,6 +10,11 @@
 extern PrintRenderContext g_printContext;
 
 /* IPrintDocumentPackageTarget is not always available in older headers; define it here. */
+/* Guid for preview target if not provided by headers. */
+#ifndef IID_IPrintPreviewDxgiPackageTarget
+extern const GUID IID_IPrintPreviewDxgiPackageTarget;
+#endif
+
 static const IID IID_IPrintDocumentPackageTarget =
     {0x1a7e1c42,0x9e6c,0x429b,{0x97,0x0b,0x34,0x84,0x67,0x1e,0x47,0x2a}};
 
@@ -103,6 +107,7 @@ static IPrintDialogCallbackVtbl callback_vtbl;
 static IPrintDialogCallback2Vtbl callback2_vtbl;
 static IPrintDocumentPackageTargetVtbl packageTarget_vtbl;
 static IObjectWithSiteVtbl site_vtbl;
+static IPrintDialogCallbackVtbl callback_vtbl;
 
 typedef struct PrintDialogCallbackImpl
 {
@@ -140,23 +145,24 @@ static ULONG STDMETHODCALLTYPE cb2_Release(IPrintDialogCallback2 *This);
 
 static HRESULT STDMETHODCALLTYPE cb2_QueryInterface(IPrintDialogCallback2 *This, REFIID riid, void **ppv)
 {
+    DebugLog(L"→ cb2_QueryInterface called");
     PrintDialogCallbackImpl *impl = ImplFromCb2(This);
 
     if (!ppv) return E_POINTER;
     *ppv = NULL;
 
     if (IsEqualIID(riid, &IID_IUnknown) ||
-        IsEqualIID(riid, &IID_IPrintDialogCallback2))
+        IsEqualIID(riid, &IID_IPrintDialogCallback))
     {
-        *ppv = &impl->callback2;
-        LogIID(riid, L"IPrintDialogCallback2");
+        *ppv = This; /* identity pointer must be preserved for IPrintDialogCallback/IUnknown */
+        LogIID(riid, L"IPrintDialogCallback (identity)");
         cb2_AddRef(This);
         return S_OK;
     }
-    if (IsEqualIID(riid, &IID_IPrintDialogCallback))
+    if (IsEqualIID(riid, &IID_IPrintDialogCallback2))
     {
-        *ppv = &impl->callback;
-        LogIID(riid, L"IPrintDialogCallback");
+        *ppv = &impl->callback2;
+        LogIID(riid, L"IPrintDialogCallback2");
         cb2_AddRef(This);
         return S_OK;
     }
@@ -172,6 +178,13 @@ static HRESULT STDMETHODCALLTYPE cb2_QueryInterface(IPrintDialogCallback2 *This,
         *ppv = &impl->site;
         LogIID(riid, L"IObjectWithSite");
         cb2_AddRef(This);
+        return S_OK;
+    }
+    if (IsEqualIID(riid, &IID_IPrintDialogServices) && impl->services)
+    {
+        *ppv = impl->services;
+        LogIID(riid, L"IPrintDialogServices (cached)");
+        impl->services->lpVtbl->AddRef(impl->services);
         return S_OK;
     }
 
@@ -204,9 +217,12 @@ static ULONG STDMETHODCALLTYPE cb2_Release(IPrintDialogCallback2 *This)
 
 static HRESULT STDMETHODCALLTYPE cb2_InitDone(IPrintDialogCallback2 *This)
 {
+    DebugLog(L"→ cb2_InitDone called");
     PrintDialogCallbackImpl *impl = ImplFromCb2(This);
-    DebugLog(L"InitDone");
+    if (!impl->services)
+        DebugLog(L"   InitDone: services is NULL");
     if (impl->ctx) RefreshPreviewTarget(impl);
+    DebugLog(L"   cb2_InitDone returning S_OK");
     return S_OK;
 }
 
@@ -221,6 +237,7 @@ static HRESULT STDMETHODCALLTYPE cb2_SelectionChange(IPrintDialogCallback2 *This
 static HRESULT STDMETHODCALLTYPE cb2_HandleMessage(IPrintDialogCallback2 *This,
     HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT *pResult)
 {
+    DebugLog(L"→ cb2_HandleMessage called");
     (void)This; (void)hDlg; (void)uMsg; (void)wParam; (void)lParam;
     if (pResult) *pResult = 0;
     return S_FALSE;
@@ -239,7 +256,7 @@ static HRESULT STDMETHODCALLTYPE cb2_SetPrintTicket(IPrintDialogCallback2 *This,
 {
     (void)This;
     (void)pTicket;
-    DebugLog(L"SetPrintTicket called — preview should now work");
+    DebugLog(L"SetPrintTicket called - preview should now work");
     return E_NOTIMPL;   // or S_OK - both work
 }
 
@@ -489,7 +506,7 @@ static IObjectWithSiteVtbl site_vtbl =
 /* Creation & helpers                                                    */
 /* --------------------------------------------------------------------- */
 
-HRESULT CreatePrintDialogCallback(IPrintDialogCallback **out)
+HRESULT CreatePrintDialogCallback(IPrintDialogCallback2 **out)
 {
     if (!out) return E_POINTER;
     *out = NULL;
@@ -497,13 +514,13 @@ HRESULT CreatePrintDialogCallback(IPrintDialogCallback **out)
     PrintDialogCallbackImpl *impl = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*impl));
     if (!impl) return E_OUTOFMEMORY;
 
-    impl->callback.lpVtbl  = (IPrintDialogCallbackVtbl*)&callback_vtbl;
     impl->callback2.lpVtbl = (IPrintDialogCallback2Vtbl*)&callback2_vtbl;
+    impl->callback.lpVtbl  = &callback_vtbl;
     impl->packageTarget.lpVtbl = &packageTarget_vtbl;
     impl->site.lpVtbl      = (IObjectWithSiteVtbl*)&site_vtbl;
     impl->refCount         = 1;
 
-    *out = (IPrintDialogCallback*)&impl->callback2; // expose callback2 as the base pointer
+    *out = &impl->callback2; // expose callback2 as the base pointer
     return S_OK;
 }
 
@@ -511,13 +528,13 @@ HRESULT CreatePrintDialogCallback(IPrintDialogCallback **out)
    stay exactly the same as in your original file – just cast the incoming pointer
    to IPrintDialogCallback2* when you need the impl */
 
-HRESULT PrintDialogCallbackGetServices(IPrintDialogCallback *cb, IPrintDialogServices **outServices)
+HRESULT PrintDialogCallbackGetServices(IPrintDialogCallback2 *cb, IPrintDialogServices **outServices)
 {
     if (!outServices) return E_POINTER;
     *outServices = NULL;
     if (!cb) return E_POINTER;
 
-    PrintDialogCallbackImpl *impl = ImplFromCb(cb);
+    PrintDialogCallbackImpl *impl = ImplFromCb2(cb);
     if (!impl->services) return E_FAIL;
 
     impl->services->lpVtbl->AddRef(impl->services);
@@ -525,13 +542,13 @@ HRESULT PrintDialogCallbackGetServices(IPrintDialogCallback *cb, IPrintDialogSer
     return S_OK;
 }
 
-HRESULT PrintDialogCallbackCopyDevMode(IPrintDialogCallback *cb, HGLOBAL *outDevMode)
+HRESULT PrintDialogCallbackCopyDevMode(IPrintDialogCallback2 *cb, HGLOBAL *outDevMode)
 {
     if (!outDevMode) return E_POINTER;
     *outDevMode = NULL;
     if (!cb) return E_POINTER;
 
-    PrintDialogCallbackImpl *impl = ImplFromCb(cb);
+    PrintDialogCallbackImpl *impl = ImplFromCb2(cb);
     if (!impl->services) return E_FAIL;
 
     UINT size = 0;
@@ -628,7 +645,7 @@ static HRESULT RefreshPreviewTarget(PrintDialogCallbackImpl *impl)
     if (SUCCEEDED(impl->services->lpVtbl->GetCurrentPrinterName(impl->services, printerName, &len)))
     {
         HGLOBAL hDm = NULL;
-        if (SUCCEEDED(PrintDialogCallbackCopyDevMode((IPrintDialogCallback*)(&impl->callback2), &hDm)))
+        if (SUCCEEDED(PrintDialogCallbackCopyDevMode(&impl->callback2, &hDm)))
         {
             DEVMODEW *dm = (DEVMODEW*)GlobalLock(hDm);
             ComputePageMetrics(dm, printerName, &dpiX, &dpiY, &width, &height);
@@ -648,13 +665,13 @@ static HRESULT RefreshPreviewTarget(PrintDialogCallbackImpl *impl)
     return PreviewTargetSetRenderer(impl->previewTarget, impl->ctx, dpiX, dpiY, width, height);
 }
 
-HRESULT PrintDialogCallbackGetPreviewTarget(IPrintDialogCallback *cb, PreviewTarget **outTarget)
+HRESULT PrintDialogCallbackGetPreviewTarget(IPrintDialogCallback2 *cb, PreviewTarget **outTarget)
 {
     if (!outTarget) return E_POINTER;
     *outTarget = NULL;
     if (!cb) return E_POINTER;
 
-    PrintDialogCallbackImpl *impl = ImplFromCb(cb);
+    PrintDialogCallbackImpl *impl = ImplFromCb2(cb);
     HRESULT hr = RefreshPreviewTarget(impl);
     if (FAILED(hr)) return hr;
 
@@ -667,10 +684,10 @@ HRESULT PrintDialogCallbackGetPreviewTarget(IPrintDialogCallback *cb, PreviewTar
     return S_OK;
 }
 
-HRESULT PrintDialogCallbackSetContext(IPrintDialogCallback *cb, PrintRenderContext *ctx)
+HRESULT PrintDialogCallbackSetContext(IPrintDialogCallback2 *cb, PrintRenderContext *ctx)
 {
     if (!cb) return E_POINTER;
-    PrintDialogCallbackImpl *impl = ImplFromCb(cb);
+    PrintDialogCallbackImpl *impl = ImplFromCb2(cb);
     impl->ctx = ctx;
     if (ctx) RefreshPreviewTarget(impl);
     return S_OK;

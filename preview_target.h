@@ -1,7 +1,6 @@
 #pragma once
 
 #include <windows.h>
-#include <PrintPreview.h>
 
 #ifdef __cplusplus
 extern "C" {

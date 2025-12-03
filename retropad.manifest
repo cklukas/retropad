@@ -21,6 +21,7 @@
 
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
+      <maxversiontested Id="10.0.26100.0"/>
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
       <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
       <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
@@ -34,7 +35,6 @@
       <dpiAware>true/pm</dpiAware>
       <dpiAwareness>PerMonitorV2</dpiAwareness>
       <longPathAware>true</longPathAware>
-      <printerDriverIsolation>true</printerDriverIsolation>
     </windowsSettings>
   </application>
 </assembly>

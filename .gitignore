@@ -3,3 +3,8 @@
 /*.res
 /*.exe
 /*.pdb
+/microsoft.windowsappsdk.*.nupkg
+/microsoft.windowsappsdk.foundation.*/
+/microsoft.windowsappsdk.winui.*/
+/winappsdk_*/
+/temp_patch.txt

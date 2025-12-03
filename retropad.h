@@ -34,6 +34,7 @@ typedef struct AppState {
     UINT findFlags;
     WCHAR findText[128];
     WCHAR replaceText[128];
+    BOOL testMode;
 } AppState;
 
 extern AppState g_app;

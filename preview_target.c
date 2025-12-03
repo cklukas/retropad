@@ -4,11 +4,32 @@
 #pragma warning(disable : 4201) // silence nameless struct/union from Windows headers
 #include <dxgi.h>
 #include <d3d11.h>
-#include <PrintPreview.h>
 #pragma warning(pop)
 #include "preview_target.h"
 #include "rendering.h"
 #include <strsafe.h>
+
+#ifndef __IPrintPreviewDxgiPackageTarget_INTERFACE_DEFINED__
+typedef enum PageCountType {
+    PAGECOUNTTYPE_FINAL = 0,
+    PAGECOUNTTYPE_INTERMEDIATE = 1
+} PageCountType;
+
+typedef struct IPrintPreviewDxgiPackageTarget IPrintPreviewDxgiPackageTarget;
+
+typedef struct IPrintPreviewDxgiPackageTargetVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IPrintPreviewDxgiPackageTarget *This, REFIID riid, void **ppvObject);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(IPrintPreviewDxgiPackageTarget *This);
+    ULONG   (STDMETHODCALLTYPE *Release)(IPrintPreviewDxgiPackageTarget *This);
+    HRESULT (STDMETHODCALLTYPE *SetJobPageCount)(IPrintPreviewDxgiPackageTarget *This, PageCountType countType, UINT32 count);
+    HRESULT (STDMETHODCALLTYPE *DrawPage)(IPrintPreviewDxgiPackageTarget *This, UINT32 jobPageNumber, IDXGISurface *pageImage, float dpiX, float dpiY);
+    HRESULT (STDMETHODCALLTYPE *InvalidatePreview)(IPrintPreviewDxgiPackageTarget *This);
+} IPrintPreviewDxgiPackageTargetVtbl;
+
+struct IPrintPreviewDxgiPackageTarget {
+    const IPrintPreviewDxgiPackageTargetVtbl *lpVtbl;
+};
+#endif
 
 static void DebugLog(const WCHAR *msg) {
     WCHAR path[MAX_PATH];
@@ -28,7 +49,9 @@ static void DebugLog(const WCHAR *msg) {
 }
 
 // {1A6DD0AD-1E2A-4E99-A5BA-91F17818290E}
+#ifndef IID_IPrintPreviewDxgiPackageTarget
 DEFINE_GUID(IID_IPrintPreviewDxgiPackageTarget, 0x1a6dd0ad, 0x1e2a, 0x4e99, 0xa5, 0xba, 0x91, 0xf1, 0x78, 0x18, 0x29, 0x0e);
+#endif
 
 struct PreviewTarget {
     IPrintPreviewDxgiPackageTarget vtbl;
@@ -338,11 +361,16 @@ IUnknown *PreviewTargetAsUnknown(PreviewTarget *target) {
 }
 
 HRESULT PreviewTargetSetRenderer(PreviewTarget *target, PrintRenderContext *ctx, FLOAT dpiX, FLOAT dpiY, FLOAT pageWidth, FLOAT pageHeight) {
-    if (!target || !ctx) return E_POINTER;
+    DebugLog(L"PreviewTargetSetRenderer called");
+    if (!target || !ctx) {
+        DebugLog(L"  E_POINTER: target or ctx NULL");
+        return E_POINTER;
+    }
     target->ctx = ctx;
     target->dpiX = dpiX;
     target->dpiY = dpiY;
     target->pageWidth = pageWidth;
     target->pageHeight = pageHeight;
+    DebugLog(L"  S_OK");
     return S_OK;
 }

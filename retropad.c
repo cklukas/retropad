@@ -11,6 +11,7 @@
 #include "file_io.h"
 #include "retropad.h"
 #include "print.h"
+#include "PrintPreviewWindow.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(linker,"/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -22,6 +23,7 @@ HINSTANCE g_hInst = NULL;
 static UINT g_findMsg = 0;
 static HMODULE g_hhLib = NULL;
 static PFNHTMLHELPW g_pHtmlHelp = NULL;
+#define WM_APP_TEST_PRINT (WM_APP + 100)
 
 static void UpdateTitle(HWND hwnd);
 static void CreateEditControl(HWND hwnd);
@@ -45,6 +47,26 @@ static INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM l
 static HFONT CreateDefaultUIFont(HWND hwnd);
 static void ShowHelp(HWND hwnd);
 static LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
+static void ParseTestFlag(void);
+static void TriggerTest(HWND hwnd);
+
+static void DebugLog(const WCHAR *msg) {
+    WCHAR path[MAX_PATH];
+    DWORD len = GetTempPathW(ARRAYSIZE(path), path);
+    if (len == 0 || len >= ARRAYSIZE(path)) return;
+    if (FAILED(StringCchCatW(path, ARRAYSIZE(path), L"retropad_preview.log"))) return;
+    HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    SYSTEMTIME st; GetLocalTime(&st);
+    WCHAR line[512];
+    StringCchPrintfW(line, ARRAYSIZE(line),
+        L"[%02u:%02u:%02u.%03u] %s\r\n",
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+        msg ? msg : L"(null)");
+    DWORD written = 0;
+    WriteFile(h, line, (DWORD)(lstrlenW(line) * sizeof(WCHAR)), &written, NULL);
+    CloseHandle(h);
+}
 
 static BOOL GetEditText(HWND hwndEdit, WCHAR **bufferOut, int *lengthOut) {
     int length = GetWindowTextLengthW(hwndEdit);
@@ -832,6 +854,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         UpdateStatusBar(hwnd);
         return 0;
     }
+    case WM_APP_TEST_PRINT:
+        TriggerTest(hwnd);
+        return 0;
     case WM_DROPFILES: {
         HDROP hDrop = (HDROP)wParam;
         WCHAR path[MAX_PATH_BUFFER];
@@ -896,11 +921,33 @@ static LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
+static void ParseTestFlag(void) {
+    LPWSTR cmdLine = GetCommandLineW();
+    int argc = 0;
+    LPWSTR *argv = CommandLineToArgvW(cmdLine, &argc);
+    if (!argv) return;
+    for (int i = 0; i < argc; ++i) {
+        if (_wcsicmp(argv[i], L"/test") == 0 || _wcsicmp(argv[i], L"-test") == 0 || _wcsicmp(argv[i], L"--test") == 0) {
+            g_app.testMode = TRUE;
+        }
+    }
+    LocalFree(argv);
+}
+
+static void TriggerTest(HWND hwnd) {
+    static const WCHAR sample[] = L"retropad print test\r\nThis text should appear in modern preview.\r\n";
+    SetWindowTextW(g_app.hwndEdit, sample);
+    DebugLog(L"TriggerTest: initiating DoPrint");
+    DoPrint(hwnd);
+    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+}
+
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
     (void)hPrevInstance;
     (void)lpCmdLine;
 
     g_hInst = hInstance;
+    (void)InitWindowsAppRuntime();
     g_findMsg = RegisterWindowMessageW(FINDMSGSTRINGW);
     g_app.wordWrap = FALSE;
     g_app.statusVisible = TRUE;
@@ -911,6 +958,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     g_app.marginsThousandths.top = g_app.marginsThousandths.bottom = 1000;  // 1.0"
     StringCchCopyW(g_app.headerText, ARRAYSIZE(g_app.headerText), L"&f");
     StringCchCopyW(g_app.footerText, ARRAYSIZE(g_app.footerText), L"Page &p of &P");
+    g_app.testMode = FALSE;
+    ParseTestFlag();
 
     WNDCLASSEXW wc = {0};
     wc.cbSize = sizeof(wc);
@@ -940,6 +989,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     g_app.hwndMain = hwnd;
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
+    if (g_app.testMode) {
+        PostMessageW(hwnd, WM_APP_TEST_PRINT, 0, 0);
+    }
 
     HACCEL accel = LoadAcceleratorsW(hInstance, MAKEINTRESOURCE(IDC_RETROPAD));
 
@@ -951,5 +1003,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
         }
     }
 
+    ShutdownWindowsAppRuntime();
     return (int)msg.wParam;
 }
