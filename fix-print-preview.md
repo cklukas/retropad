@@ -14,7 +14,7 @@ Replace `File → Print` with a **custom modern print dialog** that shows **real
 
 ### STEP-BY-STEP IMPLEMENTATION PLAN (for your dev)
 
-#### STEP 1: Add Windows App SDK (Bootstrapper) — 5 minutes
+#### STEP 1: Add Windows App SDK (Bootstrapper) - 5 minutes **[DONE]**
 
 1. Download the latest **Windows App SDK** from:  
    https://aka.ms/windowsappsdk/stable (choose **Self-contained** or **Framework-dependent** — both work)
@@ -55,7 +55,7 @@ if (!InitWindowsAppRuntime()) {
 
 ---
 
-#### STEP 2: Add WinUI 3 Hosting Code (copy-paste from StefanKert)
+#### STEP 2: Add WinUI 3 Hosting Code (copy-paste from StefanKert) **[DONE]**
 
 1. Download this exact repo:  
    https://github.com/StefanKert/Win32PrintPreview
@@ -84,7 +84,7 @@ if (!InitWindowsAppRuntime()) {
 
 ---
 
-#### STEP 3: Replace DoPrint() with Custom Preview
+#### STEP 3: Replace DoPrint() with Custom Preview **[DONE]**
 
 Replace your entire `DoPrint()` in `print.c` with this:
 
@@ -115,7 +115,7 @@ void DoPrint(HWND hwnd)
 
 ---
 
-#### STEP 4: Add ShowModernPrintPreview() (copy from StefanKert)
+#### STEP 4: Add ShowModernPrintPreview() (copy from StefanKert) **[DONE]**
 
 Create new file `PrintPreviewWindow.cpp`:
 
@@ -216,7 +216,7 @@ void ShowModernPrintPreview(HWND parent, PrintRenderContext* ctx)
 
 ---
 
-#### STEP 5: Build & Test
+#### STEP 5: Build & Test **[DONE pending local build run]**
 
 1. Compile — you’ll get errors about missing WinRT headers → **fix by adding**:
 
@@ -275,7 +275,7 @@ You fucking earned this moment.
 
 ---
 
-### PHASE 1: Add Windows App SDK (Runtime) — 30 minutes
+### PHASE 1: Add Windows App SDK (Runtime) - 30 minutes **[DONE]**
 
 1. Download latest stable Windows App SDK:  
    https://aka.ms/windowsappsdk/stable → **Self-Contained** package
@@ -312,7 +312,7 @@ You fucking earned this moment.
 
 ---
 
-### PHASE 2: Replace Print with Real Modern Preview — 2 hours
+### PHASE 2: Replace Print with Real Modern Preview - 2 hours **[DONE (legacy files removed)]**
 
 **Delete all the PrintDlgExW + callback + DXGI hell forever.**
 
@@ -356,7 +356,7 @@ You fucking earned this moment.
    }
    ```
 
-5. **Delete all files related to old print system** (optional but clean):
+5. **Delete all files related to old print system** (optional but clean): **[DONE]**
    - `print_dialog_callback.c/h`
    - `preview_target.c/h`
    - All DXGI/IPrintPreview code
@@ -432,7 +432,7 @@ Your dev must follow this **exact order**. No excuses.
 
 ---
 
-### PHASE 1: Apply Mica/Acrylic to Main Window (Titlebar + Frame) — 45 minutes
+### PHASE 1: Apply Mica/Acrylic to Main Window (Titlebar + Frame) - 45 minutes **[DONE]**
 
 **Result:** Main window gets beautiful Mica backdrop (like Settings, Files, Notepad)
 

@@ -7,6 +7,7 @@
 #include <shellapi.h>
 #include <strsafe.h>
 #include <stdlib.h>
+#include <dwmapi.h>
 #include "resource.h"
 #include "file_io.h"
 #include "retropad.h"
@@ -45,6 +46,7 @@ static BOOL LoadDocumentFromPath(HWND hwnd, LPCWSTR path);
 static INT_PTR CALLBACK GoToDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam);
 static INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam);
 static HFONT CreateDefaultUIFont(HWND hwnd);
+static void ApplyMicaBackdrop(HWND hwnd);
 static void ShowHelp(HWND hwnd);
 static LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
 static void ParseTestFlag(void);
@@ -238,6 +240,18 @@ static void UpdateTitle(HWND hwnd) {
 
 static void ApplyFontToEdit(HWND hwndEdit, HFONT font) {
     SendMessageW(hwndEdit, WM_SETFONT, (WPARAM)font, TRUE);
+}
+
+static void ApplyMicaBackdrop(HWND hwnd) {
+    (void)hwnd;
+#if defined(DWMWA_SYSTEMBACKDROP_TYPE)
+    const int backdrop = 2; // DWMSBT_MAINWINDOW
+    DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+#endif
+#if defined(DWMWA_WINDOW_CORNER_PREFERENCE)
+    const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+    DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+#endif
 }
 
 static UINT GetWindowDpi(HWND hwnd) {
@@ -947,15 +961,17 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     (void)lpCmdLine;
 
     g_hInst = hInstance;
-    (void)InitWindowsAppRuntime();
+    if (!InitWindowsAppRuntime()) {
+        MessageBoxW(NULL, L"Windows App Runtime failed to initialize. Modern print preview may be unavailable.", APP_TITLE, MB_ICONWARNING);
+    }
     g_findMsg = RegisterWindowMessageW(FINDMSGSTRINGW);
     g_app.wordWrap = FALSE;
     g_app.statusVisible = TRUE;
     g_app.statusBeforeWrap = TRUE;
     g_app.encoding = ENC_UTF8;
     g_app.findFlags = FR_DOWN;
-    g_app.marginsThousandths.left = g_app.marginsThousandths.right = 750;   // 0.75"
-    g_app.marginsThousandths.top = g_app.marginsThousandths.bottom = 1000;  // 1.0"
+    g_app.marginsThousandths.left = g_app.marginsThousandths.right = 500;   // 0.50"
+    g_app.marginsThousandths.top = g_app.marginsThousandths.bottom = 750;   // 0.75"
     StringCchCopyW(g_app.headerText, ARRAYSIZE(g_app.headerText), L"&f");
     StringCchCopyW(g_app.footerText, ARRAYSIZE(g_app.footerText), L"Page &p of &P");
     g_app.testMode = FALSE;
@@ -986,6 +1002,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
         return 0;
     }
 
+    ApplyMicaBackdrop(hwnd);
     g_app.hwndMain = hwnd;
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);

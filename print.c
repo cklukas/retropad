@@ -7,10 +7,7 @@
 #include "retropad.h"
 #include "print.h"
 #include "rendering.h"
-#include "xps_backend.h"
-#include "xps_target.h"
 #include "resource.h"
-#include "print_dialog_callback.h"
 #include "PrintPreviewWindow.h"
 
 #ifndef PRINTDLGORD_EX
@@ -116,10 +113,10 @@ static INT_PTR CALLBACK PageSetupDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPAR
     case WM_INITDIALOG: {
         SetDlgItemTextW(dlg, IDC_PAGE_HEADER, g_app.headerText);
         SetDlgItemTextW(dlg, IDC_PAGE_FOOTER, g_app.footerText);
-        SetMarginText(dlg, IDC_MARGIN_LEFT, g_app.marginsThousandths.left ? g_app.marginsThousandths.left : 750);
-        SetMarginText(dlg, IDC_MARGIN_RIGHT, g_app.marginsThousandths.right ? g_app.marginsThousandths.right : 750);
-        SetMarginText(dlg, IDC_MARGIN_TOP, g_app.marginsThousandths.top ? g_app.marginsThousandths.top : 1000);
-        SetMarginText(dlg, IDC_MARGIN_BOTTOM, g_app.marginsThousandths.bottom ? g_app.marginsThousandths.bottom : 1000);
+        SetMarginText(dlg, IDC_MARGIN_LEFT, g_app.marginsThousandths.left ? g_app.marginsThousandths.left : 500);
+        SetMarginText(dlg, IDC_MARGIN_RIGHT, g_app.marginsThousandths.right ? g_app.marginsThousandths.right : 500);
+        SetMarginText(dlg, IDC_MARGIN_TOP, g_app.marginsThousandths.top ? g_app.marginsThousandths.top : 750);
+        SetMarginText(dlg, IDC_MARGIN_BOTTOM, g_app.marginsThousandths.bottom ? g_app.marginsThousandths.bottom : 750);
         return TRUE;
     }
     case WM_COMMAND:

@@ -55,13 +55,14 @@ static BOOL RenderInternal(const PrintRenderContext *ctx, const PrintRenderTarge
     int avgCharWidth = metrics.averageCharWidth;
     BOOL headerEnabled = ctx->headerText && ctx->headerText[0] != L'\0';
     BOOL footerEnabled = ctx->footerText && ctx->footerText[0] != L'\0';
-    int headerHeight = headerEnabled ? lineHeight : 0;
-    int footerHeight = footerEnabled ? lineHeight : 0;
+    // Reserve extra breathing room so header/footer never collide with body text.
+    int headerBlock = headerEnabled ? (lineHeight * 2 + lineHeight / 2) : 0; // ~2.5 lines
+    int footerBlock = footerEnabled ? (lineHeight * 2 + lineHeight / 2) : 0; // ~2.5 lines
 
     RECT m = ctx->marginsThousandths;
     if (m.left == 0 && m.right == 0 && m.top == 0 && m.bottom == 0) {
-        m.left = m.right = 750;
-        m.top = m.bottom = 1000;
+        m.left = m.right = 500;   // 0.5"
+        m.top = m.bottom = 750;   // 0.75"
     }
 
     int marginLeft = MulDiv(m.left, metrics.dpiX, 1000);
@@ -70,13 +71,15 @@ static BOOL RenderInternal(const PrintRenderContext *ctx, const PrintRenderTarge
     int marginBottom = MulDiv(m.bottom, metrics.dpiY, 1000);
 
     int printableWidth = pageWidth - marginLeft - marginRight;
-    int printableHeight = pageHeight - marginTop - marginBottom - headerHeight - footerHeight;
+    int printableHeight = pageHeight - marginTop - marginBottom - headerBlock - footerBlock;
     if (printableWidth < avgCharWidth) printableWidth = avgCharWidth;
     if (printableHeight < lineHeight) printableHeight = lineHeight;
 
     int charsPerLine = max(1, printableWidth / max(1, avgCharWidth));
     int linesPerPage = max(1, printableHeight / lineHeight);
-    int contentTop = marginTop + headerHeight;
+    int contentTop = marginTop + headerBlock;
+    int headerTextY = marginTop;
+    int footerTextY = pageHeight - marginBottom - footerBlock + lineHeight; // leave a line gap above footer text
 
     WCHAR dateStr[64] = {0};
     WCHAR timeStr[64] = {0};
@@ -118,17 +121,20 @@ static BOOL RenderInternal(const PrintRenderContext *ctx, const PrintRenderTarge
     if (headerEnabled) {
         SIZE sz;
         if (headerLeft[0]) {
-            target->ops->DrawText(target->userData, marginLeft, marginTop, headerLeft, lstrlenW(headerLeft));
+            target->ops->DrawText(target->userData, marginLeft, headerTextY, headerLeft, lstrlenW(headerLeft));
         }
         if (headerCenter[0]) {
             target->ops->MeasureText(target->userData, headerCenter, lstrlenW(headerCenter), &sz);
-            int cx = marginLeft + (printableWidth - sz.cx) / 2;
-            target->ops->DrawText(target->userData, cx, marginTop, headerCenter, lstrlenW(headerCenter));
+            int cx = (pageWidth - sz.cx) / 2;
+            if (cx < marginLeft) cx = marginLeft;
+            int maxCx = pageWidth - marginRight - sz.cx;
+            if (cx > maxCx) cx = maxCx;
+            target->ops->DrawText(target->userData, cx, headerTextY, headerCenter, lstrlenW(headerCenter));
         }
         if (headerRight[0]) {
             target->ops->MeasureText(target->userData, headerRight, lstrlenW(headerRight), &sz);
             int rx = pageWidth - marginRight - sz.cx;
-            target->ops->DrawText(target->userData, rx, marginTop, headerRight, lstrlenW(headerRight));
+            target->ops->DrawText(target->userData, rx, headerTextY, headerRight, lstrlenW(headerRight));
         }
     }
 
@@ -167,17 +173,20 @@ static BOOL RenderInternal(const PrintRenderContext *ctx, const PrintRenderTarge
                         if (footerEnabled && (footerLeft[0] || footerCenter[0] || footerRight[0])) {
                             SIZE ft;
                             if (footerLeft[0]) {
-                                target->ops->DrawText(target->userData, marginLeft, pageHeight - marginBottom - footerHeight, footerLeft, lstrlenW(footerLeft));
+                                target->ops->DrawText(target->userData, marginLeft, footerTextY, footerLeft, lstrlenW(footerLeft));
                             }
                             if (footerCenter[0]) {
                                 target->ops->MeasureText(target->userData, footerCenter, lstrlenW(footerCenter), &ft);
-                                int cx = marginLeft + (printableWidth - ft.cx) / 2;
-                                target->ops->DrawText(target->userData, cx, pageHeight - marginBottom - footerHeight, footerCenter, lstrlenW(footerCenter));
+                                int cx = (pageWidth - ft.cx) / 2;
+                                if (cx < marginLeft) cx = marginLeft;
+                                int maxCx = pageWidth - marginRight - ft.cx;
+                                if (cx > maxCx) cx = maxCx;
+                                target->ops->DrawText(target->userData, cx, footerTextY, footerCenter, lstrlenW(footerCenter));
                             }
                             if (footerRight[0]) {
                                 target->ops->MeasureText(target->userData, footerRight, lstrlenW(footerRight), &ft);
                                 int rx = pageWidth - marginRight - ft.cx;
-                                target->ops->DrawText(target->userData, rx, pageHeight - marginBottom - footerHeight, footerRight, lstrlenW(footerRight));
+                                target->ops->DrawText(target->userData, rx, footerTextY, footerRight, lstrlenW(footerRight));
                             }
                         }
 
@@ -189,17 +198,20 @@ static BOOL RenderInternal(const PrintRenderContext *ctx, const PrintRenderTarge
                         if (headerEnabled) {
                             SIZE ht;
                             if (headerLeft[0]) {
-                                target->ops->DrawText(target->userData, marginLeft, marginTop, headerLeft, lstrlenW(headerLeft));
+                                target->ops->DrawText(target->userData, marginLeft, headerTextY, headerLeft, lstrlenW(headerLeft));
                             }
                             if (headerCenter[0]) {
                                 target->ops->MeasureText(target->userData, headerCenter, lstrlenW(headerCenter), &ht);
-                                int hx = marginLeft + (printableWidth - ht.cx) / 2;
-                                target->ops->DrawText(target->userData, hx, marginTop, headerCenter, lstrlenW(headerCenter));
+                                int hx = (pageWidth - ht.cx) / 2;
+                                if (hx < marginLeft) hx = marginLeft;
+                                int maxHx = pageWidth - marginRight - ht.cx;
+                                if (hx > maxHx) hx = maxHx;
+                                target->ops->DrawText(target->userData, hx, headerTextY, headerCenter, lstrlenW(headerCenter));
                             }
                             if (headerRight[0]) {
                                 target->ops->MeasureText(target->userData, headerRight, lstrlenW(headerRight), &ht);
                                 int rx = pageWidth - marginRight - ht.cx;
-                                target->ops->DrawText(target->userData, rx, marginTop, headerRight, lstrlenW(headerRight));
+                                target->ops->DrawText(target->userData, rx, headerTextY, headerRight, lstrlenW(headerRight));
                             }
                         }
                         lineOnPage = 0;
@@ -219,17 +231,20 @@ static BOOL RenderInternal(const PrintRenderContext *ctx, const PrintRenderTarge
                 if (footerEnabled && (footerLeft[0] || footerCenter[0] || footerRight[0])) {
                     SIZE ft;
                     if (footerLeft[0]) {
-                        target->ops->DrawText(target->userData, marginLeft, pageHeight - marginBottom - footerHeight, footerLeft, lstrlenW(footerLeft));
+                        target->ops->DrawText(target->userData, marginLeft, footerTextY, footerLeft, lstrlenW(footerLeft));
                     }
                     if (footerCenter[0]) {
                         target->ops->MeasureText(target->userData, footerCenter, lstrlenW(footerCenter), &ft);
-                        int cx = marginLeft + (printableWidth - ft.cx) / 2;
-                        target->ops->DrawText(target->userData, cx, pageHeight - marginBottom - footerHeight, footerCenter, lstrlenW(footerCenter));
+                        int cx = (pageWidth - ft.cx) / 2;
+                        if (cx < marginLeft) cx = marginLeft;
+                        int maxCx = pageWidth - marginRight - ft.cx;
+                        if (cx > maxCx) cx = maxCx;
+                        target->ops->DrawText(target->userData, cx, footerTextY, footerCenter, lstrlenW(footerCenter));
                     }
                     if (footerRight[0]) {
                         target->ops->MeasureText(target->userData, footerRight, lstrlenW(footerRight), &ft);
                         int rx = pageWidth - marginRight - ft.cx;
-                        target->ops->DrawText(target->userData, rx, pageHeight - marginBottom - footerHeight, footerRight, lstrlenW(footerRight));
+                        target->ops->DrawText(target->userData, rx, footerTextY, footerRight, lstrlenW(footerRight));
                     }
                 }
 
@@ -241,17 +256,20 @@ static BOOL RenderInternal(const PrintRenderContext *ctx, const PrintRenderTarge
                 if (headerEnabled) {
                     SIZE ht;
                     if (headerLeft[0]) {
-                        target->ops->DrawText(target->userData, marginLeft, marginTop, headerLeft, lstrlenW(headerLeft));
+                        target->ops->DrawText(target->userData, marginLeft, headerTextY, headerLeft, lstrlenW(headerLeft));
                     }
                     if (headerCenter[0]) {
                         target->ops->MeasureText(target->userData, headerCenter, lstrlenW(headerCenter), &ht);
-                        int hx = marginLeft + (printableWidth - ht.cx) / 2;
-                        target->ops->DrawText(target->userData, hx, marginTop, headerCenter, lstrlenW(headerCenter));
+                        int hx = (pageWidth - ht.cx) / 2;
+                        if (hx < marginLeft) hx = marginLeft;
+                        int maxHx = pageWidth - marginRight - ht.cx;
+                        if (hx > maxHx) hx = maxHx;
+                        target->ops->DrawText(target->userData, hx, headerTextY, headerCenter, lstrlenW(headerCenter));
                     }
                     if (headerRight[0]) {
                         target->ops->MeasureText(target->userData, headerRight, lstrlenW(headerRight), &ht);
                         int rx = pageWidth - marginRight - ht.cx;
-                        target->ops->DrawText(target->userData, rx, marginTop, headerRight, lstrlenW(headerRight));
+                        target->ops->DrawText(target->userData, rx, headerTextY, headerRight, lstrlenW(headerRight));
                     }
                 }
                 lineOnPage = 0;
@@ -270,17 +288,20 @@ static BOOL RenderInternal(const PrintRenderContext *ctx, const PrintRenderTarge
     if (footerEnabled && (footerLeft[0] || footerCenter[0] || footerRight[0])) {
         SIZE ft;
         if (footerLeft[0]) {
-            target->ops->DrawText(target->userData, marginLeft, pageHeight - marginBottom - footerHeight, footerLeft, lstrlenW(footerLeft));
+            target->ops->DrawText(target->userData, marginLeft, footerTextY, footerLeft, lstrlenW(footerLeft));
         }
         if (footerCenter[0]) {
             target->ops->MeasureText(target->userData, footerCenter, lstrlenW(footerCenter), &ft);
-            int cx = marginLeft + (printableWidth - ft.cx) / 2;
-            target->ops->DrawText(target->userData, cx, pageHeight - marginBottom - footerHeight, footerCenter, lstrlenW(footerCenter));
+            int cx = (pageWidth - ft.cx) / 2;
+            if (cx < marginLeft) cx = marginLeft;
+            int maxCx = pageWidth - marginRight - ft.cx;
+            if (cx > maxCx) cx = maxCx;
+            target->ops->DrawText(target->userData, cx, footerTextY, footerCenter, lstrlenW(footerCenter));
         }
         if (footerRight[0]) {
             target->ops->MeasureText(target->userData, footerRight, lstrlenW(footerRight), &ft);
             int rx = pageWidth - marginRight - ft.cx;
-            target->ops->DrawText(target->userData, rx, pageHeight - marginBottom - footerHeight, footerRight, lstrlenW(footerRight));
+            target->ops->DrawText(target->userData, rx, footerTextY, footerRight, lstrlenW(footerRight));
         }
     }
 
@@ -378,7 +399,7 @@ static void SplitHeaderFooterSegments(const WCHAR *format, const WCHAR *fileName
     if (right && cchRight) right[0] = L'\0';
     if (!format) return;
 
-    enum { SEG_LEFT = 0, SEG_CENTER = 1, SEG_RIGHT = 2 } seg = SEG_LEFT;
+    enum { SEG_LEFT = 0, SEG_CENTER = 1, SEG_RIGHT = 2 } seg = SEG_CENTER;
     WCHAR *targets[3] = { left, center, right };
     size_t sizes[3] = { cchLeft, cchCenter, cchRight };
 
